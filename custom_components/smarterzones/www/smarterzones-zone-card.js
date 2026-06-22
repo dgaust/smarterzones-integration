@@ -9,7 +9,7 @@
  * versions without a build step.
  */
 
-const CARD_VERSION = "1.14.0";
+const CARD_VERSION = "1.15.0";
 
 function fireEvent(node, type, detail) {
   const event = new Event(type, { bubbles: true, composed: true, cancelable: false });
@@ -366,7 +366,8 @@ class SmarterZonesZoneCard extends HTMLElement {
       .backdrop {
         position: fixed; inset: 0; z-index: 9999;
         background: rgba(0,0,0,.45); display: flex; align-items: center; justify-content: center;
-        padding: 16px; font-family: var(--paper-font-body1_-_font-family, Roboto, sans-serif);
+        padding: 16px;
+        font-family: var(--ha-font-family-body, var(--paper-font-body1_-_font-family, Roboto, "Helvetica Neue", Arial, sans-serif));
       }
       .modal {
         width: 100%; max-width: 420px; max-height: 85vh; overflow: auto;
@@ -375,7 +376,7 @@ class SmarterZonesZoneCard extends HTMLElement {
       }
       .m-head { display: flex; align-items: center; justify-content: space-between;
                 padding: 16px 16px 8px 16px; }
-      .m-title { font-size: 1.2rem; font-weight: 600; }
+      .m-title { font-size: 1.2rem; font-weight: var(--ha-font-weight-medium, 500); }
       .m-close { border: none; background: transparent; cursor: pointer; font-size: 1.1rem;
                  color: var(--secondary-text-color, #727272); width: 32px; height: 32px; border-radius: 50%; }
       .m-close:hover { background: var(--secondary-background-color, #e0e0e0); }
@@ -386,13 +387,13 @@ class SmarterZonesZoneCard extends HTMLElement {
       .m-section:first-child { margin-top: 4px; border-top: none; padding-top: 0; }
       .m-hint { font-size: .82rem; color: var(--secondary-text-color, #727272); margin-bottom: 8px; }
       .d-stat { display: flex; justify-content: space-between; padding: 4px 0; font-size: .95rem; }
-      .d-stat span:last-child { font-weight: 600; }
+      .d-stat span:last-child { font-weight: var(--ha-font-weight-medium, 500); }
       .d-conditions { display: grid; gap: 2px; margin: 2px 0 4px 0; }
       .d-cond { display: flex; align-items: center; gap: 8px; padding: 3px 0 3px 8px; font-size: .9rem; }
       .d-cond ha-icon { --mdc-icon-size: 18px; flex: 0 0 auto; }
       .d-cond-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
                      color: var(--primary-text-color); }
-      .d-cond-state { flex: 0 0 auto; font-weight: 600; color: var(--secondary-text-color); }
+      .d-cond-state { flex: 0 0 auto; font-weight: var(--ha-font-weight-medium, 500); color: var(--secondary-text-color); }
       .d-cond.ok ha-icon { color: var(--secondary-text-color); opacity: .7; }
       .d-cond.ok .d-cond-name { color: var(--secondary-text-color); }
       .d-cond.bad ha-icon { color: var(--primary-text-color); }
@@ -405,7 +406,7 @@ class SmarterZonesZoneCard extends HTMLElement {
         font-size: 1.15rem; line-height: 1; cursor: pointer;
       }
       .d-stepper button:hover { background: var(--secondary-background-color, #f0f0f0); }
-      .d-stepper span { min-width: 2.6ch; text-align: center; font-weight: 600; }
+      .d-stepper span { min-width: 2.6ch; text-align: center; font-weight: var(--ha-font-weight-medium, 500); }
     `;
   }
 
@@ -675,19 +676,23 @@ class SmarterZonesZoneCard extends HTMLElement {
 
   _styles() {
     return `
-      ha-card { overflow: hidden; }
+      ha-card {
+        overflow: hidden;
+        /* Match Home Assistant's standard typography (tile-card look). */
+        font-family: var(--ha-font-family-body, var(--paper-font-body1_-_font-family, Roboto, "Helvetica Neue", Arial, sans-serif));
+      }
       /* Lighter, more delicate Material-style icons throughout the card. */
       ha-icon { opacity: .85; }
       .header {
         display: flex; align-items: center; justify-content: space-between;
         padding: 16px 16px 0 16px; gap: 12px;
       }
-      .title { font-size: 1.25rem; font-weight: 600; color: var(--primary-text-color); }
+      .title { font-size: 1.25rem; font-weight: var(--ha-font-weight-medium, 500); color: var(--primary-text-color); }
       .head-right { display: flex; align-items: center; gap: 8px; }
       .head-temp {
         display: inline-flex; align-items: center; gap: 4px; border: none; cursor: pointer;
         background: transparent; padding: 0 2px;
-        color: var(--primary-text-color); font-size: .95rem; font-weight: 600;
+        color: var(--primary-text-color); font-size: .95rem; font-weight: var(--ha-font-weight-medium, 500);
       }
       .head-temp ha-icon {
         --mdc-icon-size: 18px; color: var(--state-icon-color, var(--secondary-text-color));
@@ -765,15 +770,15 @@ class SmarterZonesZoneCard extends HTMLElement {
       .now-panel { justify-content: center; }
       .now-items { display: flex; align-items: center; gap: 16px; }
       .now-item { display: flex; align-items: center; gap: 6px; cursor: pointer;
-                  color: var(--primary-text-color); font-size: 1.1rem; font-weight: 600; }
+                  color: var(--primary-text-color); font-size: 1.1rem; font-weight: var(--ha-font-weight-medium, 500); }
       .now-item ha-icon { --mdc-icon-size: 18px; color: var(--state-icon-color, var(--secondary-text-color)); }
       .t-ctrl { width: 100%; display: flex; align-items: center; justify-content: space-between; }
       .t-readout {
         display: inline-flex; align-items: baseline; gap: 2px;
         line-height: 1; cursor: pointer; min-width: 4.2ch; justify-content: center;
       }
-      .t-val { font-size: 1.1rem; font-weight: 600; color: var(--primary-text-color); }
-      .t-unit { font-size: 1.1rem; font-weight: 400; color: var(--primary-text-color); }
+      .t-val { font-size: 1.1rem; font-weight: var(--ha-font-weight-medium, 500); color: var(--primary-text-color); }
+      .t-unit { font-size: 1.1rem; font-weight: var(--ha-font-weight-normal, 400); color: var(--primary-text-color); }
       .t-btn {
         flex: 0 0 auto; width: 32px; height: 32px; border-radius: 50%; border: none; cursor: pointer;
         background: rgba(127, 127, 127, .16); color: var(--primary-text-color);
@@ -790,10 +795,10 @@ class SmarterZonesZoneCard extends HTMLElement {
       }
       .s-item { display: flex; align-items: center; justify-content: space-between; cursor: pointer; }
       .s-label { color: var(--secondary-text-color); font-size: .9rem; }
-      .s-val { color: var(--primary-text-color); font-weight: 600; font-size: .9rem; }
+      .s-val { color: var(--primary-text-color); font-weight: var(--ha-font-weight-medium, 500); font-size: .9rem; }
       .s-val.good { color: var(--primary-text-color); }
       .s-val.bad { color: var(--secondary-text-color); }
-      .s-val.muted { color: var(--secondary-text-color); font-weight: 500; }
+      .s-val.muted { color: var(--secondary-text-color); font-weight: var(--ha-font-weight-medium, 500); }
 
       .empty { padding: 24px 16px; display: flex; flex-direction: column; align-items: center; gap: 10px;
                color: var(--secondary-text-color); text-align: center; }
