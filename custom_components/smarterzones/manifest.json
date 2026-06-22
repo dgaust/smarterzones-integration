@@ -1,0 +1,13 @@
+{
+  "domain": "smarterzones",
+  "name": "Smarter Zones",
+  "version": "2.4.5",
+  "documentation": "https://github.com/your-org/smarterzones",
+  "issue_tracker": "https://github.com/your-org/smarterzones/issues",
+  "codeowners": [],
+  "config_flow": true,
+  "integration_type": "hub",
+  "iot_class": "local_push",
+  "dependencies": [],
+  "requirements": []
+}

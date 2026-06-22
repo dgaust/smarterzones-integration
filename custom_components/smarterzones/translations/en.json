@@ -1,0 +1,149 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Smarter Zones",
+        "description": "Choose the climate device to manage and set global options. You'll add individual zones next, each as its own device.",
+        "data": {
+          "climate_device": "Climate device",
+          "exterior_sensor": "Outdoor temperature sensor (optional)",
+          "common_zone_switch": "Common zone switch (optional)",
+          "expose_climate": "Show air conditioner controls on the device",
+          "force_auto_fan": "Force the fan into an Auto mode",
+          "fan_auto_suffix": "Auto fan mode suffix (e.g. /Auto for Daikin)",
+          "auto_fan_speed": "Set fan speed automatically from zone demand",
+          "fan_speed_modes": "Fan speeds, slowest to fastest (comma-separated, optional)",
+          "auto_setpoint": "Adjust the unit's target temperature automatically from room demand",
+          "auto_power_on": "Automatically power the unit on from a trigger sensor",
+          "trigger_sensor": "Trigger temperature sensor (optional)",
+          "trigger_high": "Turn on cooling above (\u00b0)",
+          "trigger_low": "Turn on heating below (\u00b0)"
+        }
+      },
+      "zone": {
+        "title": "Add a zone",
+        "description": "Each zone becomes its own device with a target-temperature control, a smart-control switch and an open/closed sensor. Offsets are how far the room may drift above/below target before the zone is switched.",
+        "data": {
+          "name": "Zone name",
+          "zone_switch": "Zone switch",
+          "local_sensor": "Room temperature sensor",
+          "humidity_sensor": "Humidity sensor (optional)",
+          "target_init": "Initial target temperature",
+          "cool_upper": "Initial cooling upper offset",
+          "cool_lower": "Initial cooling lower offset",
+          "heat_upper": "Initial heating upper offset",
+          "heat_lower": "Initial heating lower offset",
+          "add_conditions": "Add a condition (e.g. window must be closed)"
+        }
+      },
+      "condition": {
+        "title": "Add a condition",
+        "description": "The zone is only controlled automatically while every condition matches.",
+        "data": {
+          "entity": "Condition entity",
+          "state": "Required state",
+          "add_another": "Add another condition"
+        }
+      },
+      "zone_menu": {
+        "title": "Zones",
+        "menu_options": {
+          "zone": "Add another zone",
+          "finish": "Finish setup"
+        }
+      }
+    },
+    "abort": {
+      "already_configured": "This climate device is already set up."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Smarter Zones",
+        "menu_options": {
+          "settings": "Edit global settings",
+          "add_zone": "Add a zone",
+          "edit_zone": "Edit a zone",
+          "remove_zone": "Remove a zone"
+        }
+      },
+      "settings": {
+        "title": "Global settings",
+        "data": {
+          "exterior_sensor": "Outdoor temperature sensor (optional)",
+          "common_zone_switch": "Common zone switch (optional)",
+          "expose_climate": "Show air conditioner controls on the device",
+          "force_auto_fan": "Force the fan into an Auto mode",
+          "fan_auto_suffix": "Auto fan mode suffix (e.g. /Auto for Daikin)",
+          "auto_fan_speed": "Set fan speed automatically from zone demand",
+          "fan_speed_modes": "Fan speeds, slowest to fastest (comma-separated, optional)",
+          "auto_setpoint": "Adjust the unit's target temperature automatically from room demand",
+          "auto_power_on": "Automatically power the unit on from a trigger sensor",
+          "trigger_sensor": "Trigger temperature sensor (optional)",
+          "trigger_high": "Turn on cooling above (\u00b0)",
+          "trigger_low": "Turn on heating below (\u00b0)"
+        }
+      },
+      "add_zone": {
+        "title": "Add a zone",
+        "data": {
+          "name": "Zone name",
+          "zone_switch": "Zone switch",
+          "local_sensor": "Room temperature sensor",
+          "humidity_sensor": "Humidity sensor (optional)",
+          "target_init": "Initial target temperature",
+          "cool_upper": "Initial cooling upper offset",
+          "cool_lower": "Initial cooling lower offset",
+          "heat_upper": "Initial heating upper offset",
+          "heat_lower": "Initial heating lower offset",
+          "add_conditions": "Add a condition"
+        }
+      },
+      "add_condition": {
+        "title": "Add a condition",
+        "data": {
+          "entity": "Condition entity",
+          "state": "Required state",
+          "add_another": "Add another condition"
+        }
+      },
+      "edit_zone": {
+        "title": "Edit a zone",
+        "data": {
+          "zone": "Zone to edit"
+        }
+      },
+      "edit_zone_details": {
+        "title": "Edit zone: {name}",
+        "description": "Update the zone's name, switch or room sensor. Target temperature and offsets are adjusted on the zone's own controls. This zone currently has {conditions} condition(s); tick the box to replace them.",
+        "data": {
+          "name": "Zone name",
+          "zone_switch": "Zone switch",
+          "local_sensor": "Room temperature sensor",
+          "humidity_sensor": "Humidity sensor (optional)",
+          "redefine_conditions": "Replace the control conditions"
+        }
+      },
+      "edit_condition": {
+        "title": "Set a condition",
+        "description": "The zone is only controlled automatically while every condition matches.",
+        "data": {
+          "entity": "Condition entity",
+          "state": "Required state",
+          "add_another": "Add another condition"
+        }
+      },
+      "remove_zone": {
+        "title": "Remove a zone",
+        "description": "Removing a zone also removes its device and entities.",
+        "data": {
+          "zone": "Zone to remove"
+        }
+      }
+    },
+    "abort": {
+      "no_zones": "There are no zones to remove."
+    }
+  }
+}

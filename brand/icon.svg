@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256" role="img" aria-label="Smarter Zones">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="256" y2="256" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#38BDF8"/>
+      <stop offset="1" stop-color="#0369A1"/>
+    </linearGradient>
+  </defs>
+  <rect width="256" height="256" rx="58" fill="url(#bg)"/>
+  <!-- roof -->
+  <path d="M128 60 L218 128 L38 128 Z" fill="#FFFFFF"/>
+  <!-- three zones -->
+  <rect x="58"  y="128" width="41" height="76" rx="9" fill="#FFFFFF"/>
+  <rect x="107" y="128" width="41" height="76" rx="9" fill="#FFFFFF"/>
+  <rect x="156" y="128" width="41" height="76" rx="9" fill="#FFFFFF"/>
+  <!-- per-zone sensor dots: cool / comfortable / warm -->
+  <circle cx="78.5"  cy="152" r="6.5" fill="#0EA5E9"/>
+  <circle cx="127.5" cy="152" r="6.5" fill="#10B981"/>
+  <circle cx="176.5" cy="152" r="6.5" fill="#F59E0B"/>
+</svg>
