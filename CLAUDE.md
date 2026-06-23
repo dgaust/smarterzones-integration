@@ -12,7 +12,7 @@ sub-devices, config flow, no helper entities).
 
 - Integration version: see `custom_components/smarterzones/manifest.json` (`2.4.5`).
 - Card version: see `CARD_VERSION` in
-  `custom_components/smarterzones/www/smarterzones-zone-card.js` (`1.17.2`).
+  `custom_components/smarterzones/www/smarterzones-zone-card.js` (`1.17.4`).
 - Bump both when you change the respective part (see Conventions).
 
 ## Hardware / HA context this was built against

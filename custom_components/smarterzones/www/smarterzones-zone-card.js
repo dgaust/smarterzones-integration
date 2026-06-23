@@ -9,7 +9,7 @@
  * versions without a build step.
  */
 
-const CARD_VERSION = "1.17.2";
+const CARD_VERSION = "1.17.4";
 
 function fireEvent(node, type, detail) {
   const event = new Event(type, { bubbles: true, composed: true, cancelable: false });
@@ -746,11 +746,11 @@ class SmarterZonesZoneCard extends HTMLElement {
       .head-right { display: flex; align-items: center; gap: 8px; }
       .head-temp {
         display: inline-flex; align-items: center; gap: 4px; border: none; cursor: pointer;
-        background: transparent; padding: 0 2px;
+        background: transparent; padding: 0 6px;
         color: var(--primary-text-color); font-size: .95rem; font-weight: var(--ha-font-weight-medium, 500);
       }
       .head-temp ha-icon {
-        --mdc-icon-size: 18px; color: var(--state-icon-color, var(--secondary-text-color));
+        --mdc-icon-size: 20px; color: var(--state-icon-color, var(--secondary-text-color));
       }
       .info-btn {
         display: inline-flex; align-items: center; justify-content: center;
