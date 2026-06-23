@@ -9,7 +9,7 @@
  * versions without a build step.
  */
 
-const CARD_VERSION = "1.16.2";
+const CARD_VERSION = "1.16.3";
 
 function fireEvent(node, type, detail) {
   const event = new Event(type, { bubbles: true, composed: true, cancelable: false });
@@ -526,7 +526,7 @@ class SmarterZonesZoneCard extends HTMLElement {
 
           ${showDeviation ? `
           <div class="field">
-            <span class="f-label">From target</span>
+            <span class="f-label">Drift</span>
             <div class="dev">
               <div class="dev-track">
                 <div class="dev-fill" data-dev-fill></div>

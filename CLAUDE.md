@@ -12,7 +12,7 @@ sub-devices, config flow, no helper entities).
 
 - Integration version: see `custom_components/smarterzones/manifest.json` (`2.4.5`).
 - Card version: see `CARD_VERSION` in
-  `custom_components/smarterzones/www/smarterzones-zone-card.js` (`1.16.2`).
+  `custom_components/smarterzones/www/smarterzones-zone-card.js` (`1.16.3`).
 - Bump both when you change the respective part (see Conventions).
 
 ## Hardware / HA context this was built against
@@ -180,8 +180,9 @@ README.md                            user-facing docs
   first rendered position is the final one; only later state changes animate. Then
   **Now** and **Target** — all four are a fixed-width label to the left of a grey panel;
   Now content is centered, Target is a spread `−  value °C  +` stepper. An optional
-  **From target** deviation bar (editor toggle `show_deviation`, default on; shown in both
-  full and compact modes when a room temp sensor exists) sits at the **bottom of the card**
+  **Drift** (from-target) deviation bar (label `Drift`; editor toggle `show_deviation`,
+  default on; shown in both full and compact modes when a room temp sensor exists) sits at
+  the **bottom of the card**
   (after the status grid): centre = target, fill grows right (warmer) / left (cooler) over
   a ±3° scale (`DEV_SCALE` in `_update`) with a `+/−°` delta; the inner edge at the target is
   square (`.dev-fill.warm`/`.cool` round only the outer end). The Zone control
