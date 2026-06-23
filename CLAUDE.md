@@ -12,7 +12,7 @@ sub-devices, config flow, no helper entities).
 
 - Integration version: see `custom_components/smarterzones/manifest.json` (`2.4.5`).
 - Card version: see `CARD_VERSION` in
-  `custom_components/smarterzones/www/smarterzones-zone-card.js` (`1.16.3`).
+  `custom_components/smarterzones/www/smarterzones-zone-card.js` (`1.17.1`).
 - Bump both when you change the respective part (see Conventions).
 
 ## Hardware / HA context this was built against
@@ -148,7 +148,11 @@ README.md                            user-facing docs
   by category: the **config** switch is Smart control, the primary switch is the
   manual **Open zone** damper override (`this._ids.smart` vs `this._ids.openZone`).
 - Editor options: `device` (required), `name`, `current_label`, `status_display`,
-  `show_deviation` (boolean, default on — the "from target" bar).
+  `show_deviation` (boolean, default on — the "from target" bar), `icon_labels`
+  (boolean, default off — swap the field labels for icons: Managed=`mdi:thermostat-auto`,
+  Zone=`mdi:air-filter`, Now=`mdi:thermometer`, Target=`mdi:target`,
+  Drift=`mdi:arrow-left-right`, via the `flabel()` helper; icons sit in the same
+  fixed-width label column as text so controls align in both modes).
   `status_display` is a single select (`full` | `compact`) that replaced the confusing
   `show_status` + `compact_status` boolean pair — `_statusMode()` / the editor's
   `setConfig` migrate those legacy keys (and the removed `hidden` value → `compact`,
