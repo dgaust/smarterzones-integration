@@ -9,7 +9,7 @@
  * versions without a build step.
  */
 
-const CARD_VERSION = "1.17.1";
+const CARD_VERSION = "1.17.2";
 
 function fireEvent(node, type, detail) {
   const event = new Event(type, { bubbles: true, composed: true, cancelable: false });
@@ -816,9 +816,10 @@ class SmarterZonesZoneCard extends HTMLElement {
       .field { display: flex; flex-direction: row; align-items: center; gap: 12px; }
       .f-label { flex: 0 0 auto; width: 64px; white-space: nowrap;
                  color: var(--secondary-text-color); font-size: .9rem; }
-      /* Icon-label mode: the icon sits in the same fixed-width column as the text
-         labels (left-aligned), so the controls line up identically in both modes. */
-      .content.icons .f-label { display: flex; align-items: center; }
+      /* Icon-label mode: the label column shrinks to the icon so it sits tight to
+         the control with the normal 12px field gap (not the wide text column), while
+         staying left-aligned at the same start as the text labels. */
+      .content.icons .f-label { width: auto; display: flex; align-items: center; }
       .f-icon { --mdc-icon-size: 20px; color: var(--secondary-text-color); }
       .now-panel, .target {
         flex: 1 1 auto;

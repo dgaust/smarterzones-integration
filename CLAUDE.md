@@ -12,7 +12,7 @@ sub-devices, config flow, no helper entities).
 
 - Integration version: see `custom_components/smarterzones/manifest.json` (`2.4.5`).
 - Card version: see `CARD_VERSION` in
-  `custom_components/smarterzones/www/smarterzones-zone-card.js` (`1.17.1`).
+  `custom_components/smarterzones/www/smarterzones-zone-card.js` (`1.17.2`).
 - Bump both when you change the respective part (see Conventions).
 
 ## Hardware / HA context this was built against
@@ -151,8 +151,9 @@ README.md                            user-facing docs
   `show_deviation` (boolean, default on — the "from target" bar), `icon_labels`
   (boolean, default off — swap the field labels for icons: Managed=`mdi:thermostat-auto`,
   Zone=`mdi:air-filter`, Now=`mdi:thermometer`, Target=`mdi:target`,
-  Drift=`mdi:arrow-left-right`, via the `flabel()` helper; icons sit in the same
-  fixed-width label column as text so controls align in both modes).
+  Drift=`mdi:arrow-left-right`, via the `flabel()` helper; the icon column shrinks to
+  the icon (`width: auto`) so it sits tight to the control with the normal field gap,
+  not the wide text column).
   `status_display` is a single select (`full` | `compact`) that replaced the confusing
   `show_status` + `compact_status` boolean pair — `_statusMode()` / the editor's
   `setConfig` migrate those legacy keys (and the removed `hidden` value → `compact`,
