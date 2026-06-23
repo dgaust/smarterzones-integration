@@ -12,7 +12,7 @@ sub-devices, config flow, no helper entities).
 
 - Integration version: see `custom_components/smarterzones/manifest.json` (`2.4.5`).
 - Card version: see `CARD_VERSION` in
-  `custom_components/smarterzones/www/smarterzones-zone-card.js` (`1.15.0`).
+  `custom_components/smarterzones/www/smarterzones-zone-card.js` (`1.16.2`).
 - Bump both when you change the respective part (see Conventions).
 
 ## Hardware / HA context this was built against
@@ -147,7 +147,8 @@ README.md                            user-facing docs
   name), so it doesn't hard-code entity IDs. The two zone switches are told apart
   by category: the **config** switch is Smart control, the primary switch is the
   manual **Open zone** damper override (`this._ids.smart` vs `this._ids.openZone`).
-- Editor options: `device` (required), `name`, `current_label`, `status_display`.
+- Editor options: `device` (required), `name`, `current_label`, `status_display`,
+  `show_deviation` (boolean, default on — the "from target" bar).
   `status_display` is a single select (`full` | `compact`) that replaced the confusing
   `show_status` + `compact_status` boolean pair — `_statusMode()` / the editor's
   `setConfig` migrate those legacy keys (and the removed `hidden` value → `compact`,
@@ -178,7 +179,12 @@ README.md                            user-facing docs
   `_build` then `_update` run in one synchronous pass before paint, so the thumb's
   first rendered position is the final one; only later state changes animate. Then
   **Now** and **Target** — all four are a fixed-width label to the left of a grey panel;
-  Now content is centered, Target is a spread `−  value °C  +` stepper. The Zone control
+  Now content is centered, Target is a spread `−  value °C  +` stepper. An optional
+  **From target** deviation bar (editor toggle `show_deviation`, default on; shown in both
+  full and compact modes when a room temp sensor exists) sits at the **bottom of the card**
+  (after the status grid): centre = target, fill grows right (warmer) / left (cooler) over
+  a ±3° scale (`DEV_SCALE` in `_update`) with a `+/−°` delta; the inner edge at the target is
+  square (`.dev-fill.warm`/`.cool` round only the outer end). The Zone control
   drives the Open-zone switch directly, so a room can be opened/closed by hand (handy
   when Smart control is off). In **compact** `status_display` the current temperature
   moves up into the header status area (a `.head-temp` chip), humidity is dropped, and

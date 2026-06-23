@@ -9,7 +9,7 @@
  * versions without a build step.
  */
 
-const CARD_VERSION = "1.15.0";
+const CARD_VERSION = "1.16.2";
 
 function fireEvent(node, type, detail) {
   const event = new Event(type, { bubbles: true, composed: true, cancelable: false });
@@ -81,6 +81,7 @@ class SmarterZonesZoneCard extends HTMLElement {
         mode,
         this._config.device || "",
         this._config.status_display || "full",
+        this._config.show_deviation !== false ? 1 : 0,
       ].join("|");
       if (this._sig !== sig) {
         this._build();
@@ -421,6 +422,9 @@ class SmarterZonesZoneCard extends HTMLElement {
     // area and humidity is dropped, so the separate "Now" bar isn't shown.
     const showHeadTemp = compact && !!this._ids.currentTemp;
     const showNow = !compact && (this._ids.currentTemp || this._ids.humidity);
+    // From-target deviation bar: opt-out via the editor, shown in both full and
+    // compact modes, and only when a room temperature sensor exists.
+    const showDeviation = c.show_deviation !== false && !!this._ids.currentTemp;
 
     if (!hasZone) {
       this.shadowRoot.innerHTML = `
@@ -519,6 +523,18 @@ class SmarterZonesZoneCard extends HTMLElement {
             ${this._ids.coolRange ? statusItem("cool", "Cooling band") : ""}
             ${this._ids.heatRange ? statusItem("heat", "Heating band") : ""}
           </div>` : ""}
+
+          ${showDeviation ? `
+          <div class="field">
+            <span class="f-label">From target</span>
+            <div class="dev">
+              <div class="dev-track">
+                <div class="dev-fill" data-dev-fill></div>
+                <div class="dev-ctr"></div>
+              </div>
+              <span class="dev-delta" data-dev-delta>–</span>
+            </div>
+          </div>` : ""}
         </div>
       </ha-card>`;
 
@@ -611,6 +627,35 @@ class SmarterZonesZoneCard extends HTMLElement {
       if (h) {
         const v = Number(h.state);
         txt("[data-humidity]", isNaN(v) ? "–" : `${Math.round(v)}%`);
+      }
+    }
+
+    // Deviation-from-target bar: centre = target, fill grows right (warmer) or
+    // left (cooler). The inner edge (at the target) is square; only the outer end
+    // is rounded. Scale: ±DEV_SCALE° maps to the half-width.
+    const devFill = root.querySelector("[data-dev-fill]");
+    if (devFill) {
+      const DEV_SCALE = 3;
+      const cur = this._ids.currentTemp ? Number((states[this._ids.currentTemp] || {}).state) : NaN;
+      const tgt = tSt ? Number(tSt.state) : NaN;
+      const deltaEl = root.querySelector("[data-dev-delta]");
+      if (!isNaN(cur) && !isNaN(tgt)) {
+        const dev = cur - tgt;
+        const w = (Math.min(Math.abs(dev) / DEV_SCALE, 1) * 50).toFixed(1) + "%";
+        const warm = dev >= 0;
+        devFill.style.width = w;
+        devFill.style.left = warm ? "50%" : "auto";
+        devFill.style.right = warm ? "auto" : "50%";
+        devFill.classList.toggle("warm", warm);
+        devFill.classList.toggle("cool", !warm);
+        if (deltaEl) {
+          const r = Math.round(dev * 10) / 10;
+          deltaEl.textContent =
+            (r > 0 ? "+" + r.toFixed(1) : r < 0 ? "−" + Math.abs(r).toFixed(1) : r.toFixed(1)) + "°";
+        }
+      } else {
+        devFill.style.width = "0%";
+        if (deltaEl) deltaEl.textContent = "–";
       }
     }
 
@@ -789,6 +834,29 @@ class SmarterZonesZoneCard extends HTMLElement {
       .t-btn:hover { background-color: rgba(127, 127, 127, .28); }
       .t-btn:active { background-color: rgba(127, 127, 127, .4); }
 
+      /* Deviation-from-target bar: target in the centre, fill grows out to the
+         current reading. The end at the target is square; only the outer end is
+         rounded (set per-direction in JS via .warm / .cool). */
+      .dev { flex: 1 1 auto; display: flex; align-items: center; gap: 12px; }
+      .dev-track {
+        position: relative; flex: 1 1 auto; height: 10px; border-radius: 5px;
+        background: var(--secondary-background-color);
+      }
+      .dev-fill {
+        position: absolute; top: 0; bottom: 0; background: var(--primary-color);
+        border-radius: 0; transition: width .2s ease;
+      }
+      .dev-fill.warm { border-radius: 0 5px 5px 0; }
+      .dev-fill.cool { border-radius: 5px 0 0 5px; }
+      .dev-ctr {
+        position: absolute; left: 50%; top: -3px; bottom: -3px; width: 2px; z-index: 1;
+        background: var(--secondary-text-color); transform: translateX(-1px); border-radius: 1px;
+      }
+      .dev-delta {
+        flex: 0 0 auto; min-width: 4ch; text-align: right; font-size: .95rem;
+        font-weight: var(--ha-font-weight-medium, 500); color: var(--primary-text-color);
+      }
+
       .status {
         display: grid; grid-template-columns: 1fr 1fr; gap: 8px 16px;
         border-top: 1px solid var(--divider-color); padding-top: 12px;
@@ -829,6 +897,7 @@ const EDITOR_SCHEMA = [
       },
     },
   },
+  { name: "show_deviation", selector: { boolean: {} } },
 ];
 
 class SmarterZonesZoneCardEditor extends HTMLElement {
@@ -841,6 +910,7 @@ class SmarterZonesZoneCardEditor extends HTMLElement {
         cfg.show_status === false || cfg.compact_status ? "compact" : "full";
     }
     if (cfg.status_display === "hidden") cfg.status_display = "compact";
+    if (cfg.show_deviation === undefined) cfg.show_deviation = true;
     delete cfg.show_status;
     delete cfg.compact_status;
     delete cfg.show_details;
@@ -859,6 +929,7 @@ class SmarterZonesZoneCardEditor extends HTMLElement {
       name: "Name (optional, overrides the device name)",
       current_label: "Current readings label (e.g. \"Now\")",
       status_display: "Status display",
+      show_deviation: "Show \"from target\" deviation bar",
     };
     return labels[schema.name] || schema.name;
   }
