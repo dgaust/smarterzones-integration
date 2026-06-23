@@ -9,7 +9,7 @@
  * versions without a build step.
  */
 
-const CARD_VERSION = "1.16.3";
+const CARD_VERSION = "1.17.1";
 
 function fireEvent(node, type, detail) {
   const event = new Event(type, { bubbles: true, composed: true, cancelable: false });
@@ -82,6 +82,7 @@ class SmarterZonesZoneCard extends HTMLElement {
         this._config.device || "",
         this._config.status_display || "full",
         this._config.show_deviation !== false ? 1 : 0,
+        this._config.icon_labels ? 1 : 0,
       ].join("|");
       if (this._sig !== sig) {
         this._build();
@@ -425,6 +426,8 @@ class SmarterZonesZoneCard extends HTMLElement {
     // From-target deviation bar: opt-out via the editor, shown in both full and
     // compact modes, and only when a room temperature sensor exists.
     const showDeviation = c.show_deviation !== false && !!this._ids.currentTemp;
+    // Field labels can be text (default) or icons (icon_labels option).
+    const iconLabels = !!c.icon_labels;
 
     if (!hasZone) {
       this.shadowRoot.innerHTML = `
@@ -441,6 +444,13 @@ class SmarterZonesZoneCard extends HTMLElement {
 
     const statusItem = (cls, label) =>
       `<div class="s-item ${cls}"><span class="s-label">${label}</span><span class="s-val" data-${cls}>–</span></div>`;
+
+    // A field label: text, or an icon when icon_labels is on. `attrs` lets callers
+    // add data hooks (only used in text mode, e.g. the live "Now" label).
+    const flabel = (text, icon, attrs = "") =>
+      iconLabels
+        ? `<span class="f-label"><ha-icon class="f-icon" icon="${icon}" title="${text}"></ha-icon></span>`
+        : `<span class="f-label" ${attrs}>${text}</span>`;
 
     this.shadowRoot.innerHTML = `
       <style>${this._styles()}</style>
@@ -463,9 +473,9 @@ class SmarterZonesZoneCard extends HTMLElement {
           </div>
         </div>
 
-        <div class="content">
+        <div class="content${iconLabels ? " icons" : ""}">
           <div class="field">
-            <span class="f-label">Managed</span>
+            ${flabel("Managed", "mdi:thermostat-auto")}
             <div class="ctrl-switch" data-switch="smart" role="switch" tabindex="0"
                  aria-checked="false" aria-label="Managed">
               <div class="cs-bg"></div>
@@ -475,7 +485,7 @@ class SmarterZonesZoneCard extends HTMLElement {
 
           ${this._ids.openZone ? `
           <div class="field">
-            <span class="f-label">Zone</span>
+            ${flabel("Zone", "mdi:air-filter")}
             <div class="ctrl-switch" data-switch="zone" role="switch" tabindex="0"
                  aria-checked="false" aria-label="Zone open">
               <div class="cs-bg"></div>
@@ -485,7 +495,7 @@ class SmarterZonesZoneCard extends HTMLElement {
 
           ${showNow ? `
           <div class="field">
-            <span class="f-label" data-now-label>Now</span>
+            ${flabel("Now", "mdi:thermometer", "data-now-label")}
             <div class="now-panel">
               <div class="now-items">
                 ${this._ids.currentTemp ? `
@@ -503,7 +513,7 @@ class SmarterZonesZoneCard extends HTMLElement {
           </div>` : ""}
 
           <div class="field">
-            <span class="f-label">Target</span>
+            ${flabel("Target", "mdi:target")}
             <div class="target">
               <div class="t-ctrl">
                 <button class="t-btn dec" id="t-dec" aria-label="Lower target">−</button>
@@ -526,7 +536,7 @@ class SmarterZonesZoneCard extends HTMLElement {
 
           ${showDeviation ? `
           <div class="field">
-            <span class="f-label">Drift</span>
+            ${flabel("Drift", "mdi:arrow-left-right")}
             <div class="dev">
               <div class="dev-track">
                 <div class="dev-fill" data-dev-fill></div>
@@ -806,6 +816,10 @@ class SmarterZonesZoneCard extends HTMLElement {
       .field { display: flex; flex-direction: row; align-items: center; gap: 12px; }
       .f-label { flex: 0 0 auto; width: 64px; white-space: nowrap;
                  color: var(--secondary-text-color); font-size: .9rem; }
+      /* Icon-label mode: the icon sits in the same fixed-width column as the text
+         labels (left-aligned), so the controls line up identically in both modes. */
+      .content.icons .f-label { display: flex; align-items: center; }
+      .f-icon { --mdc-icon-size: 20px; color: var(--secondary-text-color); }
       .now-panel, .target {
         flex: 1 1 auto;
         background: var(--secondary-background-color);
@@ -898,6 +912,7 @@ const EDITOR_SCHEMA = [
     },
   },
   { name: "show_deviation", selector: { boolean: {} } },
+  { name: "icon_labels", selector: { boolean: {} } },
 ];
 
 class SmarterZonesZoneCardEditor extends HTMLElement {
@@ -911,6 +926,7 @@ class SmarterZonesZoneCardEditor extends HTMLElement {
     }
     if (cfg.status_display === "hidden") cfg.status_display = "compact";
     if (cfg.show_deviation === undefined) cfg.show_deviation = true;
+    if (cfg.icon_labels === undefined) cfg.icon_labels = false;
     delete cfg.show_status;
     delete cfg.compact_status;
     delete cfg.show_details;
@@ -930,6 +946,7 @@ class SmarterZonesZoneCardEditor extends HTMLElement {
       current_label: "Current readings label (e.g. \"Now\")",
       status_display: "Status display",
       show_deviation: "Show \"from target\" deviation bar",
+      icon_labels: "Use icon labels instead of text",
     };
     return labels[schema.name] || schema.name;
   }
