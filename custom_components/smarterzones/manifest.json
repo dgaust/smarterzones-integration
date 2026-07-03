@@ -1,7 +1,7 @@
 {
   "domain": "smarterzones",
   "name": "Smarter Zones",
-  "version": "2.4.5",
+  "version": "2.5.0",
   "documentation": "https://github.com/your-org/smarterzones",
   "issue_tracker": "https://github.com/your-org/smarterzones/issues",
   "codeowners": [],

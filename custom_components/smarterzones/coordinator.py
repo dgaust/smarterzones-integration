@@ -99,6 +99,12 @@ class SmarterZonesManager:
         # The unit's target temperature as it was when auto-setpoint was switched
         # on (the user's "base" level), re-instated when it's switched off:
         self._setpoint_base: float | None = None
+        # The last biased setpoint we commanded, and the last base we tried to
+        # restore. Together they let the turn-on capture recognise a display that
+        # is still *our own* bias (an off-state restore some units ignore) and
+        # fall back to the real base instead of corrupting it:
+        self._last_commanded_setpoint: float | None = None
+        self._last_restored_base: float | None = None
 
     # ----------------------------------------------------------- config views
 
@@ -250,7 +256,27 @@ class SmarterZonesManager:
             value = float(value) if value is not None else None
         except (TypeError, ValueError):
             value = None
+        # If the displayed target is still the last bias *we* wrote, the off-state
+        # restore never took on the device (some units ignore writes while off).
+        # Capturing it would corrupt the base a little more every on/off cycle, so
+        # fall back to the base we last tried to restore.
+        if (
+            value is not None
+            and self._last_commanded_setpoint is not None
+            and self._last_restored_base is not None
+            and abs(value - self._last_commanded_setpoint) < SETPOINT_DEADBAND
+            and abs(value - self._last_restored_base) >= SETPOINT_DEADBAND
+        ):
+            _LOGGER.warning(
+                "Auto target temperature: displayed target %.1f° is still our own "
+                "bias (the off-state restore didn't take on the unit); keeping the "
+                "remembered base %.1f° instead",
+                value,
+                self._last_restored_base,
+            )
+            value = self._last_restored_base
         self._setpoint_base = value
+        self._last_commanded_setpoint = None
         if value is not None:
             _LOGGER.info(
                 "Auto target temperature on: remembered base setpoint %.1f°", value
@@ -291,6 +317,7 @@ class SmarterZonesManager:
         except (TypeError, ValueError):
             current = None
         if current is not None and abs(current - value) < SETPOINT_DEADBAND:
+            self._last_restored_base = value
             _LOGGER.debug(
                 "Auto target temperature: setpoint already ~%.1f°; no restore needed",
                 value,
@@ -303,6 +330,11 @@ class SmarterZonesManager:
                 {"entity_id": self.climate_device, "temperature": value},
                 blocking=True,
             )
+            self._last_restored_base = value
+            if state_l != "off":
+                # Written while the unit is on, so it reliably took; no stale
+                # bias remains for the turn-on capture to guard against.
+                self._last_commanded_setpoint = None
             _LOGGER.info(
                 "Auto target temperature: re-instated base setpoint %.1f°", value
             )
@@ -1231,6 +1263,22 @@ class SmarterZonesManager:
             )
             out["bias"] = -round(SETPOINT_REST_MARGIN, 2)
 
+        # The user's setpoint is a hard bound: while cooling the target is never
+        # set above it, while heating never below it. The bias only ever pushes
+        # *past* the user's level (to defeat the unit's optimistic return-air
+        # reading), never short of it - the unit-anchored value alone could land
+        # on the wrong side of the base when the return air reads extreme.
+        base = (
+            self._setpoint_base if self._setpoint_base is not None else current_setpoint
+        )
+        out["base_setpoint"] = base
+        if base is not None:
+            bounded = min(raw, base) if direction == "cool" else max(raw, base)
+            out["base_bounded"] = bounded != raw
+            raw = bounded
+        else:
+            out["base_bounded"] = False
+
         desired = round(raw / step) * step
         if min_t is not None:
             desired = max(min_t, desired)
@@ -1296,6 +1344,7 @@ class SmarterZonesManager:
                 {"entity_id": self.climate_device, "temperature": desired},
                 blocking=True,
             )
+            self._last_commanded_setpoint = desired
             _LOGGER.info(
                 "Auto setpoint: %s -> %.1f° (%s; worst demand %.1f° over %d open "
                 "zone(s), unit reads %.1f°)",
@@ -1354,6 +1403,12 @@ class SmarterZonesManager:
                 steps.append(
                     "All open zones are satisfied; easing the setpoint back so the "
                     "unit can idle instead of over-conditioning."
+                )
+            if plan.get("base_bounded"):
+                side = "above" if direction == "cool" else "below"
+                steps.append(
+                    f"Held at your setpoint {plan['base_setpoint']:g}° - the target "
+                    f"is never {side} it while {verb}."
                 )
             if plan.get("clamped"):
                 lo = plan.get("device_min_temp")

@@ -10,7 +10,7 @@ to drive each zone. It started life as the `smarterzones` AppDaemon app and was
 rebuilt into a full UI-configurable integration (hub device + per-zone
 sub-devices, config flow, no helper entities).
 
-- Integration version: see `custom_components/smarterzones/manifest.json` (`2.4.5`).
+- Integration version: see `custom_components/smarterzones/manifest.json` (`2.5.0`).
 - Card version: see `CARD_VERSION` in
   `custom_components/smarterzones/www/smarterzones-zone-card.js` (`1.17.4`).
 - Bump both when you change the respective part (see Conventions).
@@ -111,7 +111,11 @@ README.md                            user-facing docs
   `SETPOINT_MIN_BIAS` and the live `setpoint_max_bias`, pushed *below* the unit's
   reading when cooling / *above* when heating; once all open zones are satisfied it
   eases the setpoint the other way (`SETPOINT_REST_MARGIN`) so the unit idles.
-  Clamped to the unit's min/max and snapped to its step; only acts in single-setpoint
+  **The user's base setpoint is a hard bound**: while cooling the computed target is
+  never *above* the base, while heating never *below* it (`base_bounded` in
+  `_setpoint_eval` — the bias only pushes past the user's level, never short of it;
+  falls back to the current setpoint while the base is unknown). Clamped to the unit's
+  min/max and snapped to its step; only acts in single-setpoint
   cool/heat modes (heat_cool/fan/dry/off left alone). `_setpoint_eval` computes it and
   is shared by `_async_apply_setpoint` (applies) and `setpoint_decision` (explains).
   **Base-setpoint memory**: the user's base target is (re)captured via
@@ -127,7 +131,12 @@ README.md                            user-facing docs
   `device_mode == "off"`). That restore uses `clear=True`, so the base is then forgotten
   and SmarterZones does **not** keep writing to the unit while it stays off - it's
   re-captured on the next turn-on. The restore writes the base even when the unit is off
-  (only an unavailable/unknown device is skipped); that's the point. The base is published
+  (only an unavailable/unknown device is skipped); that's the point. Because some units
+  **ignore writes while off**, the manager tracks `_last_commanded_setpoint` (every bias
+  write) and `_last_restored_base` (every restore): if the turn-on capture finds the
+  display still equal to our own last bias (and not the restored base), it keeps the
+  remembered base instead of capturing the stale bias — otherwise each on/off cycle
+  would corrupt the base a little further. The base is published
   as the `AutoSetpointSwitch` `base_temperature` attribute so it survives a restart while
   on. NOTE: while actively conditioning the unit's *displayed* setpoint shows the bias,
   not the base - that's how the feature forces the unit to keep running. The real device's
