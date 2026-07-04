@@ -10,7 +10,7 @@ to drive each zone. It started life as the `smarterzones` AppDaemon app and was
 rebuilt into a full UI-configurable integration (hub device + per-zone
 sub-devices, config flow, no helper entities).
 
-- Integration version: see `custom_components/smarterzones/manifest.json` (`2.5.0`).
+- Integration version: see `custom_components/smarterzones/manifest.json` (`2.6.0`).
 - Card version: see `CARD_VERSION` in
   `custom_components/smarterzones/www/smarterzones-zone-card.js` (`1.17.4`).
 - Bump both when you change the respective part (see Conventions).
@@ -138,7 +138,17 @@ README.md                            user-facing docs
   remembered base instead of capturing the stale bias — otherwise each on/off cycle
   would corrupt the base a little further. The base is published
   as the `AutoSetpointSwitch` `base_temperature` attribute so it survives a restart while
-  on. NOTE: while actively conditioning the unit's *displayed* setpoint shows the bias,
+  on. The **fan mode has the same base memory** (`capture_fan_base` on power-on / at the
+  first auto-fan change, `async_restore_fan_base` on the first off pass in
+  `_async_apply_fan`, the same stale-command guard via `_last_commanded_fan` /
+  `_last_restored_fan`, persisted as the `AutoFanSpeedSwitch` `base_fan_mode` attribute).
+  **Off-restore verification**: because off-state writes are the unreliable ones, every
+  off-state restore schedules `_async_verify_restore` via `async_call_later`
+  (`RESTORE_VERIFY_DELAY` 15s): it re-reads the device and re-writes the expected
+  setpoint/fan if the display still shows *our own* stale value (a value matching
+  neither is a user's off-state change and is left alone), retrying up to
+  `RESTORE_VERIFY_ATTEMPTS` (2) before giving up with a warning. The pending check is
+  cancelled on turn-on and on unload, and it no-ops if the unit is no longer off. NOTE: while actively conditioning the unit's *displayed* setpoint shows the bias,
   not the base - that's how the feature forces the unit to keep running. The real device's
   state lags writes, so reads right after a set can be stale.
 - **Switch commands** use `blocking=True` with retry

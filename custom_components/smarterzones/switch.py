@@ -133,7 +133,9 @@ class AutoFanSpeedSwitch(SwitchEntity, RestoreEntity):
     """Hub-level toggle for the automatic fan-speed feature.
 
     Only created when an ordered fan-speed string is configured. Restores its
-    last state across restarts, falling back to the configured default.
+    last state across restarts, falling back to the configured default. The fan
+    mode remembered at power-on (restored when the unit turns off) is published
+    as the ``base_fan_mode`` attribute so it survives a restart too.
     """
 
     _attr_has_entity_name = True
@@ -148,16 +150,27 @@ class AutoFanSpeedSwitch(SwitchEntity, RestoreEntity):
         self._attr_device_info = hub_device_info(entry_id, title)
         self._attr_is_on = manager.auto_fan_speed
 
+    @property
+    def extra_state_attributes(self) -> dict:
+        base = self._manager.fan_base
+        return {} if base is None else {"base_fan_mode": base}
+
     async def async_added_to_hass(self) -> None:
         await super().async_added_to_hass()
+        restored_base = None
         if (last := await self.async_get_last_state()) is not None:
             self._attr_is_on = last.state == "on"
+            restored_base = last.attributes.get("base_fan_mode")
+        if self._attr_is_on and restored_base:
+            self._manager.set_fan_base(restored_base)
         # Register the resolved state; the manager's own setup pass applies it.
         self._manager.set_auto_fan_speed(self._attr_is_on)
 
     async def async_turn_on(self, **kwargs) -> None:
         self._attr_is_on = True
         self._manager.set_auto_fan_speed(True)
+        # Remember the current fan mode before the first automatic change.
+        self._manager.capture_fan_base()
         self.async_write_ha_state()
         await self._manager.async_manage_all()
 

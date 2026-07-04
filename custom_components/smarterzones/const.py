@@ -89,6 +89,12 @@ SETPOINT_MAX_ZONE_BUMP = 0.3
 # Don't rewrite the setpoint for changes smaller than this (avoids churn).
 SETPOINT_DEADBAND = 0.3
 
+# After restoring the base setpoint/fan mode when the unit turns off, re-check
+# the device this many seconds later and re-write if the restore didn't take
+# (some units silently ignore writes while off), retrying up to the cap.
+RESTORE_VERIFY_DELAY = 15.0
+RESTORE_VERIFY_ATTEMPTS = 2
+
 # Bounds for the hub 'Setpoint bias' number entity.
 SETPOINT_BIAS_MIN = 0.5
 SETPOINT_BIAS_MAX = 6.0

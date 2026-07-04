@@ -15,7 +15,10 @@ from enum import Enum
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import Event, EventStateChangedData, HomeAssistant, callback
-from homeassistant.helpers.event import async_track_state_change_event
+from homeassistant.helpers.event import (
+    async_call_later,
+    async_track_state_change_event,
+)
 
 from .const import (
     CONF_AUTO_FAN_SPEED,
@@ -48,6 +51,8 @@ from .const import (
     FAN_FULL_DEVIATION,
     FAN_MAX_ZONE_BUMP,
     FAN_PER_ZONE_BUMP,
+    RESTORE_VERIFY_ATTEMPTS,
+    RESTORE_VERIFY_DELAY,
     SETPOINT_DEADBAND,
     SETPOINT_FULL_DEVIATION,
     SETPOINT_MAX_BIAS,
@@ -105,6 +110,15 @@ class SmarterZonesManager:
         # fall back to the real base instead of corrupting it:
         self._last_commanded_setpoint: float | None = None
         self._last_restored_base: float | None = None
+        # The fan-mode equivalents: the mode the unit had at power-on (restored
+        # when it turns off), the last speed auto-fan commanded, and the last
+        # mode we tried to restore:
+        self._fan_base: str | None = None
+        self._last_commanded_fan: str | None = None
+        self._last_restored_fan: str | None = None
+        # Pending delayed check that the off-state restores actually took:
+        self._restore_verify_unsub = None
+        self._restore_verify_attempts = 0
 
     # ----------------------------------------------------------- config views
 
@@ -335,6 +349,10 @@ class SmarterZonesManager:
                 # Written while the unit is on, so it reliably took; no stale
                 # bias remains for the turn-on capture to guard against.
                 self._last_commanded_setpoint = None
+            else:
+                # Off-state writes are the unreliable ones - come back shortly
+                # and confirm the device actually took it.
+                self._schedule_restore_verify(first=True)
             _LOGGER.info(
                 "Auto target temperature: re-instated base setpoint %.1f°", value
             )
@@ -344,6 +362,211 @@ class SmarterZonesManager:
                 value,
                 self.climate_device,
                 err,
+            )
+
+    # ------------------------------------------------- base fan-mode memory
+
+    @property
+    def fan_base(self) -> str | None:
+        """The fan mode remembered from when the unit was powered on."""
+        return self._fan_base
+
+    def set_fan_base(self, value: str | None) -> None:
+        """Seed the remembered fan mode (restored from the switch across restarts)."""
+        self._fan_base = value or None
+
+    def capture_fan_base(self) -> None:
+        """Remember the unit's current fan mode as the user's base level.
+
+        Mirrors ``capture_setpoint_base``: called on power-on before auto fan
+        speed makes any change, with the same guard against capturing a speed
+        *we* set (an off-state restore the unit ignored).
+        """
+        state = self.hass.states.get(self.climate_device)
+        value = state.attributes.get("fan_mode") if state else None
+        value = value or None
+        if (
+            value is not None
+            and self._last_commanded_fan is not None
+            and self._last_restored_fan is not None
+            and value == self._last_commanded_fan
+            and value != self._last_restored_fan
+        ):
+            _LOGGER.warning(
+                "Auto fan speed: displayed fan mode '%s' is still our own choice "
+                "(the off-state restore didn't take on the unit); keeping the "
+                "remembered mode '%s' instead",
+                value,
+                self._last_restored_fan,
+            )
+            value = self._last_restored_fan
+        self._fan_base = value
+        self._last_commanded_fan = None
+        if value:
+            _LOGGER.info("Auto fan speed: remembered base fan mode '%s'", value)
+        else:
+            _LOGGER.debug("Auto fan speed: no base fan mode to remember")
+
+    async def async_restore_fan_base(self, clear: bool = True) -> None:
+        """Re-instate the remembered fan mode, then forget it.
+
+        Called the first time the unit is found off. Skips only an unreachable
+        device; the write is attempted while off on purpose, with the delayed
+        verification catching units that ignore it.
+        """
+        value = self._fan_base
+        if clear:
+            self._fan_base = None
+        if not value:
+            _LOGGER.debug("Auto fan speed: no base fan mode to restore")
+            return
+        state = self.hass.states.get(self.climate_device)
+        state_l = state.state.lower() if state else None
+        if state is None or state_l in ("unavailable", "unknown"):
+            _LOGGER.debug(
+                "Auto fan speed: unit %s unreachable; can't restore fan mode '%s'",
+                self.climate_device,
+                value,
+            )
+            return
+        self._last_restored_fan = value
+        current_fan = state.attributes.get("fan_mode")
+        if current_fan == value:
+            _LOGGER.debug(
+                "Auto fan speed: fan mode already '%s'; no restore needed", value
+            )
+            return
+        try:
+            await self.hass.services.async_call(
+                "climate",
+                "set_fan_mode",
+                {"entity_id": self.climate_device, "fan_mode": value},
+                blocking=True,
+            )
+            if state_l != "off":
+                self._last_commanded_fan = None
+            else:
+                self._schedule_restore_verify(first=True)
+            _LOGGER.info("Auto fan speed: re-instated base fan mode '%s'", value)
+        except Exception as err:  # noqa: BLE001 - unit may reject the mode
+            _LOGGER.warning(
+                "Could not re-instate base fan mode '%s' on %s: %s",
+                value,
+                self.climate_device,
+                err,
+            )
+
+    # -------------------------------------------- off-restore verification
+
+    def _cancel_restore_verify(self) -> None:
+        if self._restore_verify_unsub is not None:
+            self._restore_verify_unsub()
+            self._restore_verify_unsub = None
+
+    def _schedule_restore_verify(self, first: bool = False) -> None:
+        """Check RESTORE_VERIFY_DELAY seconds later that the restores took."""
+        if first:
+            self._restore_verify_attempts = 0
+        self._cancel_restore_verify()
+        self._restore_verify_unsub = async_call_later(
+            self.hass, RESTORE_VERIFY_DELAY, self._async_verify_restore
+        )
+
+    async def _async_verify_restore(self, _now) -> None:
+        """Confirm the off-state setpoint/fan restores match expectations.
+
+        Runs RESTORE_VERIFY_DELAY seconds after an off-restore. If the device
+        still shows *our own* stale value it re-writes and re-checks (up to
+        RESTORE_VERIFY_ATTEMPTS retries). A value that matches neither the
+        expected base nor our last command means the user changed it while
+        off, so it's left alone. Only acts while the unit is still off - once
+        it's back on, the normal logic owns the device again.
+        """
+        self._restore_verify_unsub = None
+        state = self.hass.states.get(self.climate_device)
+        if state is None or state.state.lower() != "off":
+            _LOGGER.debug("Restore check: unit no longer off; nothing to verify")
+            return
+        retried = False
+
+        expected = self._last_restored_base
+        if expected is not None:
+            current = state.attributes.get("temperature")
+            try:
+                current = float(current) if current is not None else None
+            except (TypeError, ValueError):
+                current = None
+            mismatch = current is None or abs(current - expected) >= SETPOINT_DEADBAND
+            ours = (
+                self._last_commanded_setpoint is None
+                or (
+                    current is not None
+                    and abs(current - self._last_commanded_setpoint)
+                    < SETPOINT_DEADBAND
+                )
+            )
+            if mismatch and ours:
+                _LOGGER.warning(
+                    "Restore check: setpoint reads %s, expected %.1f°; re-writing",
+                    current,
+                    expected,
+                )
+                try:
+                    await self.hass.services.async_call(
+                        "climate",
+                        "set_temperature",
+                        {"entity_id": self.climate_device, "temperature": expected},
+                        blocking=True,
+                    )
+                    retried = True
+                except Exception as err:  # noqa: BLE001
+                    _LOGGER.warning("Restore check: setpoint re-write failed: %s", err)
+            elif mismatch:
+                _LOGGER.debug(
+                    "Restore check: setpoint %s isn't ours; leaving it alone", current
+                )
+
+        expected_fan = self._last_restored_fan
+        if expected_fan:
+            current_fan = state.attributes.get("fan_mode")
+            fan_ours = (
+                self._last_commanded_fan is None
+                or current_fan == self._last_commanded_fan
+            )
+            if current_fan != expected_fan and fan_ours:
+                _LOGGER.warning(
+                    "Restore check: fan mode is '%s', expected '%s'; re-writing",
+                    current_fan,
+                    expected_fan,
+                )
+                try:
+                    await self.hass.services.async_call(
+                        "climate",
+                        "set_fan_mode",
+                        {"entity_id": self.climate_device, "fan_mode": expected_fan},
+                        blocking=True,
+                    )
+                    retried = True
+                except Exception as err:  # noqa: BLE001
+                    _LOGGER.warning("Restore check: fan re-write failed: %s", err)
+            elif current_fan != expected_fan:
+                _LOGGER.debug(
+                    "Restore check: fan mode '%s' isn't ours; leaving it alone",
+                    current_fan,
+                )
+
+        if not retried:
+            _LOGGER.debug("Restore check: setpoint and fan match expectations")
+            return
+        if self._restore_verify_attempts < RESTORE_VERIFY_ATTEMPTS:
+            self._restore_verify_attempts += 1
+            self._schedule_restore_verify()
+        else:
+            _LOGGER.warning(
+                "Restore check: still not matching after %d attempts; giving up "
+                "(the unit may ignore writes while off - values will be corrected "
+                "at next power-on)",
+                RESTORE_VERIFY_ATTEMPTS + 1,
             )
 
     # ------------------------------------------------------------- lifecycle
@@ -419,6 +642,7 @@ class SmarterZonesManager:
         for unsub in self._unsubs:
             unsub()
         self._unsubs.clear()
+        self._cancel_restore_verify()
 
     # ------------------------------------------- entity coordination
 
@@ -742,6 +966,12 @@ class SmarterZonesManager:
         came_from_off = old_s in ("off", "none", "") and new_s not in inactive
         if came_from_off and self.auto_setpoint:
             self.capture_setpoint_base()
+        if came_from_off and self.auto_fan_speed:
+            self.capture_fan_base()
+        if turned_on:
+            # The unit is running again: the normal logic owns it, so any
+            # pending off-restore verification is obsolete.
+            self._cancel_restore_verify()
         await self.async_manage_all(turn_on=turned_on)
         # Guarantee every zone's status sensors reflect the new climate state,
         # even for zones the control logic skipped (deadband, manual, etc.).
@@ -788,7 +1018,16 @@ class SmarterZonesManager:
 
     async def _async_apply_fan(self) -> None:
         """Apply whichever fan behaviour is configured (speed wins over /Auto)."""
-        if self.auto_fan_speed:
+        device_state = self._device_state()
+        if (
+            device_state
+            and device_state.lower() == "off"
+            and self._fan_base is not None
+        ):
+            # First off pass: put the fan back to the user's mode, then forget
+            # it (mirrors the setpoint base restore).
+            await self.async_restore_fan_base(clear=True)
+        elif self.auto_fan_speed:
             await self._async_apply_fan_speed()
         elif self.force_auto_fan:
             await self._async_enforce_fan()
@@ -1083,6 +1322,14 @@ class SmarterZonesManager:
                 "Auto fan speed: already at '%s'; no change", desired
             )
             return
+        # Remember the user's fan mode just before the first time we change it,
+        # in case it wasn't captured at power-on (e.g. the unit was off then).
+        if self._fan_base is None and current_fan:
+            self._fan_base = current_fan
+            _LOGGER.info(
+                "Auto fan speed: remembered base fan mode '%s' (first change)",
+                current_fan,
+            )
         try:
             await self.hass.services.async_call(
                 "climate",
@@ -1090,6 +1337,7 @@ class SmarterZonesManager:
                 {"entity_id": self.climate_device, "fan_mode": desired},
                 blocking=True,
             )
+            self._last_commanded_fan = desired
             worst, open_count = self._fan_demand()
             _LOGGER.info(
                 "Auto fan speed: '%s' -> '%s' (worst deviation %.1f, %d zone(s) open)",
