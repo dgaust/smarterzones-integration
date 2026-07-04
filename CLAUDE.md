@@ -10,9 +10,9 @@ to drive each zone. It started life as the `smarterzones` AppDaemon app and was
 rebuilt into a full UI-configurable integration (hub device + per-zone
 sub-devices, config flow, no helper entities).
 
-- Integration version: see `custom_components/smarterzones/manifest.json` (`2.6.0`).
+- Integration version: see `custom_components/smarterzones/manifest.json` (`2.6.1`).
 - Card version: see `CARD_VERSION` in
-  `custom_components/smarterzones/www/smarterzones-zone-card.js` (`1.17.4`).
+  `custom_components/smarterzones/www/smarterzones-zone-card.js` (`1.17.5`).
 - Bump both when you change the respective part (see Conventions).
 
 ## Hardware / HA context this was built against

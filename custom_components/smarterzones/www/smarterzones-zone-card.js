@@ -9,7 +9,7 @@
  * versions without a build step.
  */
 
-const CARD_VERSION = "1.17.4";
+const CARD_VERSION = "1.17.5";
 
 function fireEvent(node, type, detail) {
   const event = new Event(type, { bubbles: true, composed: true, cancelable: false });
@@ -982,7 +982,7 @@ if (!window.customCards.some((c) => c.type === "smarterzones-zone-card")) {
     name: "SmarterZones Zone",
     description: "A complete SmarterZones zone: target, smart control, status and offsets.",
     preview: true,
-    documentationURL: "https://github.com/",
+    documentationURL: "https://github.com/dgaust/smarterzones-integration",
   });
 }
 
