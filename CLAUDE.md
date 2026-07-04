@@ -10,7 +10,7 @@ to drive each zone. It started life as the `smarterzones` AppDaemon app and was
 rebuilt into a full UI-configurable integration (hub device + per-zone
 sub-devices, config flow, no helper entities).
 
-- Integration version: see `custom_components/smarterzones/manifest.json` (`2.6.1`).
+- Integration version: see `custom_components/smarterzones/manifest.json` (`2.6.2`).
 - Card version: see `CARD_VERSION` in
   `custom_components/smarterzones/www/smarterzones-zone-card.js` (`1.17.5`).
 - Bump both when you change the respective part (see Conventions).
@@ -153,7 +153,13 @@ README.md                            user-facing docs
   state lags writes, so reads right after a set can be stale.
 - **Switch commands** use `blocking=True` with retry
   (`SWITCH_RETRY_ATTEMPTS`/`SWITCH_RETRY_DELAY`) because the Daikin drops
-  simultaneous commands.
+  simultaneous commands. **Climate writes retry the same way** via
+  `_async_climate_call(service, data, description) -> bool` — every
+  `set_temperature`/`set_fan_mode` (bias, restores, verify re-writes) routes
+  through it; success bookkeeping (`_last_commanded_*`, verify scheduling) only
+  runs when it returns True. Exception: `_async_enforce_fan` stays single-attempt,
+  because a unit that rejects the `/Auto` suffix is documented as "ignored rather
+  than retried" (retrying an invalid mode every pass would spam).
 
 ## The Lovelace card (`www/smarterzones-zone-card.js`)
 

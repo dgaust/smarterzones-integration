@@ -337,13 +337,11 @@ class SmarterZonesManager:
                 value,
             )
             return
-        try:
-            await self.hass.services.async_call(
-                "climate",
-                "set_temperature",
-                {"entity_id": self.climate_device, "temperature": value},
-                blocking=True,
-            )
+        if await self._async_climate_call(
+            "set_temperature",
+            {"temperature": value},
+            f"re-instate base setpoint {value:.1f}°",
+        ):
             self._last_restored_base = value
             if state_l != "off":
                 # Written while the unit is on, so it reliably took; no stale
@@ -355,13 +353,6 @@ class SmarterZonesManager:
                 self._schedule_restore_verify(first=True)
             _LOGGER.info(
                 "Auto target temperature: re-instated base setpoint %.1f°", value
-            )
-        except Exception as err:  # noqa: BLE001 - unit may reject the temperature
-            _LOGGER.warning(
-                "Could not re-instate base target temperature %.1f° on %s: %s",
-                value,
-                self.climate_device,
-                err,
             )
 
     # ------------------------------------------------- base fan-mode memory
@@ -436,25 +427,16 @@ class SmarterZonesManager:
                 "Auto fan speed: fan mode already '%s'; no restore needed", value
             )
             return
-        try:
-            await self.hass.services.async_call(
-                "climate",
-                "set_fan_mode",
-                {"entity_id": self.climate_device, "fan_mode": value},
-                blocking=True,
-            )
+        if await self._async_climate_call(
+            "set_fan_mode",
+            {"fan_mode": value},
+            f"re-instate base fan mode '{value}'",
+        ):
             if state_l != "off":
                 self._last_commanded_fan = None
             else:
                 self._schedule_restore_verify(first=True)
             _LOGGER.info("Auto fan speed: re-instated base fan mode '%s'", value)
-        except Exception as err:  # noqa: BLE001 - unit may reject the mode
-            _LOGGER.warning(
-                "Could not re-instate base fan mode '%s' on %s: %s",
-                value,
-                self.climate_device,
-                err,
-            )
 
     # -------------------------------------------- off-restore verification
 
@@ -511,16 +493,14 @@ class SmarterZonesManager:
                     current,
                     expected,
                 )
-                try:
-                    await self.hass.services.async_call(
-                        "climate",
-                        "set_temperature",
-                        {"entity_id": self.climate_device, "temperature": expected},
-                        blocking=True,
-                    )
-                    retried = True
-                except Exception as err:  # noqa: BLE001
-                    _LOGGER.warning("Restore check: setpoint re-write failed: %s", err)
+                await self._async_climate_call(
+                    "set_temperature",
+                    {"temperature": expected},
+                    f"re-write base setpoint {expected:.1f}°",
+                )
+                # Re-check regardless of the outcome; the follow-up pass is what
+                # confirms the value actually stuck.
+                retried = True
             elif mismatch:
                 _LOGGER.debug(
                     "Restore check: setpoint %s isn't ours; leaving it alone", current
@@ -539,16 +519,12 @@ class SmarterZonesManager:
                     current_fan,
                     expected_fan,
                 )
-                try:
-                    await self.hass.services.async_call(
-                        "climate",
-                        "set_fan_mode",
-                        {"entity_id": self.climate_device, "fan_mode": expected_fan},
-                        blocking=True,
-                    )
-                    retried = True
-                except Exception as err:  # noqa: BLE001
-                    _LOGGER.warning("Restore check: fan re-write failed: %s", err)
+                await self._async_climate_call(
+                    "set_fan_mode",
+                    {"fan_mode": expected_fan},
+                    f"re-write base fan mode '{expected_fan}'",
+                )
+                retried = True
             elif current_fan != expected_fan:
                 _LOGGER.debug(
                     "Restore check: fan mode '%s' isn't ours; leaving it alone",
@@ -923,6 +899,52 @@ class SmarterZonesManager:
             SWITCH_RETRY_ATTEMPTS,
             last_err,
         )
+
+    async def _async_climate_call(
+        self, service: str, data: dict, description: str
+    ) -> bool:
+        """Call a climate service on the unit with retries, so writes stick.
+
+        Same retry policy as the zone switches (the controller can drop
+        commands that arrive close together): calls are blocking so failures
+        raise, and each retry waits briefly before trying again. Returns True
+        once a call succeeds, False when every attempt failed.
+        """
+        last_err: Exception | None = None
+        for attempt in range(1, SWITCH_RETRY_ATTEMPTS + 1):
+            try:
+                await self.hass.services.async_call(
+                    "climate",
+                    service,
+                    {"entity_id": self.climate_device, **data},
+                    blocking=True,
+                )
+                if attempt > 1:
+                    _LOGGER.info(
+                        "%s succeeded on attempt %d/%d",
+                        description,
+                        attempt,
+                        SWITCH_RETRY_ATTEMPTS,
+                    )
+                return True
+            except Exception as err:  # noqa: BLE001 - unit may reject the command
+                last_err = err
+                _LOGGER.warning(
+                    "Attempt %d/%d to %s failed: %s",
+                    attempt,
+                    SWITCH_RETRY_ATTEMPTS,
+                    description,
+                    err,
+                )
+                if attempt < SWITCH_RETRY_ATTEMPTS:
+                    await asyncio.sleep(SWITCH_RETRY_DELAY)
+        _LOGGER.error(
+            "Failed to %s after %d attempts; giving up: %s",
+            description,
+            SWITCH_RETRY_ATTEMPTS,
+            last_err,
+        )
+        return False
 
     async def async_set_zone_damper(self, zone_switch: str, turn_on: bool) -> None:
         """Manually open/close a zone's damper (from the per-zone Open switch).
@@ -1330,13 +1352,9 @@ class SmarterZonesManager:
                 "Auto fan speed: remembered base fan mode '%s' (first change)",
                 current_fan,
             )
-        try:
-            await self.hass.services.async_call(
-                "climate",
-                "set_fan_mode",
-                {"entity_id": self.climate_device, "fan_mode": desired},
-                blocking=True,
-            )
+        if await self._async_climate_call(
+            "set_fan_mode", {"fan_mode": desired}, f"set fan mode '{desired}'"
+        ):
             self._last_commanded_fan = desired
             worst, open_count = self._fan_demand()
             _LOGGER.info(
@@ -1346,8 +1364,6 @@ class SmarterZonesManager:
                 worst,
                 open_count,
             )
-        except Exception as err:  # noqa: BLE001 - unit may reject the mode
-            _LOGGER.warning("Could not set fan mode '%s': %s", desired, err)
 
     # ------------------------------------------------------- setpoint control
 
@@ -1585,13 +1601,11 @@ class SmarterZonesManager:
                 "Auto target temperature: remembered base setpoint %.1f° (first bias)",
                 current_setpoint,
             )
-        try:
-            await self.hass.services.async_call(
-                "climate",
-                "set_temperature",
-                {"entity_id": self.climate_device, "temperature": desired},
-                blocking=True,
-            )
+        if await self._async_climate_call(
+            "set_temperature",
+            {"temperature": desired},
+            f"set target temperature {desired:.1f}°",
+        ):
             self._last_commanded_setpoint = desired
             _LOGGER.info(
                 "Auto setpoint: %s -> %.1f° (%s; worst demand %.1f° over %d open "
@@ -1602,13 +1616,6 @@ class SmarterZonesManager:
                 plan.get("worst_demand", 0.0),
                 plan.get("open_zones", 0),
                 plan.get("unit_temperature", 0.0),
-            )
-        except Exception as err:  # noqa: BLE001 - unit may reject the temperature
-            _LOGGER.warning(
-                "Could not set target temperature %.1f° on %s: %s",
-                desired,
-                self.climate_device,
-                err,
             )
 
     def setpoint_decision(self) -> dict:
