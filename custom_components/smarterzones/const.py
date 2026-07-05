@@ -105,6 +105,11 @@ SETPOINT_BIAS_STEP = 0.5
 SWITCH_RETRY_ATTEMPTS = 3
 SWITCH_RETRY_DELAY = 0.4  # seconds between attempts
 
+# A zone condition change (e.g. a door sensor) only affects the zone once the
+# new state has held this long, so a sensor that flaps open/closed doesn't
+# rapidly cycle the damper. Displays still show the raw state immediately.
+CONDITION_DEBOUNCE_SECONDS = 30.0
+
 # Bounds for the per-zone target-temperature number entity.
 TARGET_TEMP_MIN = 16.0
 TARGET_TEMP_MAX = 32.0

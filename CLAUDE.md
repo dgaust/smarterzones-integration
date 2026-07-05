@@ -10,7 +10,7 @@ to drive each zone. It started life as the `smarterzones` AppDaemon app and was
 rebuilt into a full UI-configurable integration (hub device + per-zone
 sub-devices, config flow, no helper entities).
 
-- Integration version: see `custom_components/smarterzones/manifest.json` (`2.6.2`).
+- Integration version: see `custom_components/smarterzones/manifest.json` (`2.7.0`).
 - Card version: see `CARD_VERSION` in
   `custom_components/smarterzones/www/smarterzones-zone-card.js` (`1.17.5`).
 - Bump both when you change the respective part (see Conventions).
@@ -73,7 +73,15 @@ README.md                            user-facing docs
     conditions met are opened. (`_handle_climate_change`)
   - **Fail-safe**: an unreadable local sensor opens the zone.
   - **Conditions gate**: if a configured condition isn't met for the active mode,
-    the zone is closed.
+    the zone is closed. **Debounced** (`_effective_conditions_met`): a raw condition
+    change only takes effect once it has held `CONDITION_DEBOUNCE_SECONDS` (30s), so a
+    flapping door sensor moves no dampers — the zone holds while a flip is pending,
+    with a one-shot `async_call_later` re-check for when the window expires (a quiet
+    sensor wouldn't re-trigger evaluation otherwise). Symmetric (unmet→met is also
+    debounced). First evaluation adopts raw truth; the tracker is reset on unit
+    turn-on and unload (`_reset_condition_tracking`). Displays (Conditions met
+    sensor, card condition list, Projected status) intentionally stay raw/instant —
+    only the control decision is debounced.
   - **Common zone**: keeps an airflow path open when the unit runs and nothing else
     is open. **Optional** — units that don't need a minimum airflow path (e.g. with a
     bypass damper) can leave it unset, and everything works (no damper is force-opened;

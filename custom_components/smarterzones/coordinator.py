@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+import time
 from enum import Enum
 
 from homeassistant.config_entries import ConfigEntry
@@ -44,6 +45,7 @@ from .const import (
     CONF_ZONE_NAME,
     CONF_ZONE_SWITCH,
     CONF_ZONES,
+    CONDITION_DEBOUNCE_SECONDS,
     DEFAULT_FAN_AUTO_SUFFIX,
     DEFAULT_OFFSET,
     DEFAULT_TRIGGER_HIGH,
@@ -119,6 +121,14 @@ class SmarterZonesManager:
         # Pending delayed check that the off-state restores actually took:
         self._restore_verify_unsub = None
         self._restore_verify_attempts = 0
+        # Condition debounce, per zone id: the condition state the control
+        # logic is acting on, a pending flip (target state, monotonic start
+        # time), and the one-shot timers that re-evaluate when a pending flip
+        # has held long enough. Keeps a flapping door sensor from rapidly
+        # cycling a damper; displays still show the raw state.
+        self._cond_effective: dict[str, bool] = {}
+        self._cond_pending: dict[str, tuple[bool, float]] = {}
+        self._cond_timers: dict[str, object] = {}
 
     # ----------------------------------------------------------- config views
 
@@ -619,6 +629,7 @@ class SmarterZonesManager:
             unsub()
         self._unsubs.clear()
         self._cancel_restore_verify()
+        self._reset_condition_tracking()
 
     # ------------------------------------------- entity coordination
 
@@ -802,6 +813,86 @@ class SmarterZonesManager:
     def conditions_met(self, zone: dict) -> bool:
         """Public: are all of a zone's conditions currently satisfied?"""
         return self._conditions_met(zone)
+
+    def _cancel_condition_timer(self, zone_id: str) -> None:
+        cancel = self._cond_timers.pop(zone_id, None)
+        if cancel is not None:
+            cancel()
+
+    @callback
+    def _reset_condition_tracking(self) -> None:
+        """Forget the debounce state so the next evaluation adopts raw truth.
+
+        Used on unit turn-on (and unload): after a period where zones weren't
+        being condition-managed, the control logic should honour an open
+        window immediately rather than waiting out the debounce.
+        """
+        self._cond_effective.clear()
+        self._cond_pending.clear()
+        for zone_id in list(self._cond_timers):
+            self._cancel_condition_timer(zone_id)
+
+    def _effective_conditions_met(self, zone: dict) -> bool:
+        """The debounced condition state the control logic acts on.
+
+        A raw condition change (e.g. a door sensor flapping open/closed) only
+        takes effect once it has held for CONDITION_DEBOUNCE_SECONDS, so brief
+        flaps move no dampers at all. The first evaluation of a zone adopts the
+        raw state immediately. Entering the pending window schedules a one-shot
+        re-evaluation for when the debounce expires, since the sensor may go
+        quiet and nothing else would re-trigger the decision.
+        """
+        if not zone.get(CONF_CONDITIONS):
+            return True
+        zone_id = zone[CONF_ZONE_ID]
+        raw = self._conditions_met(zone)
+        if zone_id not in self._cond_effective:
+            self._cond_effective[zone_id] = raw
+            return raw
+        effective = self._cond_effective[zone_id]
+        if raw == effective:
+            # Steady (or a flap that returned in time): drop any pending flip.
+            if self._cond_pending.pop(zone_id, None) is not None:
+                self._cancel_condition_timer(zone_id)
+                _LOGGER.debug(
+                    "%s: condition flap settled back within %.0fs; no change",
+                    zone[CONF_ZONE_NAME],
+                    CONDITION_DEBOUNCE_SECONDS,
+                )
+            return effective
+        now = time.monotonic()
+        pending = self._cond_pending.get(zone_id)
+        if pending is None or pending[0] != raw:
+            self._cond_pending[zone_id] = (raw, now)
+            self._cancel_condition_timer(zone_id)
+
+            async def _recheck(_now, zid=zone_id):
+                self._cond_timers.pop(zid, None)
+                if (z := self.get_zone(zid)) is not None:
+                    await self.async_manage_zone(z)
+
+            self._cond_timers[zone_id] = async_call_later(
+                self.hass, CONDITION_DEBOUNCE_SECONDS + 0.1, _recheck
+            )
+            _LOGGER.debug(
+                "%s: conditions now %s; holding for %.0fs before acting",
+                zone[CONF_ZONE_NAME],
+                "met" if raw else "not met",
+                CONDITION_DEBOUNCE_SECONDS,
+            )
+            return effective
+        if now - pending[1] >= CONDITION_DEBOUNCE_SECONDS:
+            self._cond_effective[zone_id] = raw
+            self._cond_pending.pop(zone_id, None)
+            self._cancel_condition_timer(zone_id)
+            _LOGGER.debug(
+                "%s: conditions %s held for %.0fs; acting on it",
+                zone[CONF_ZONE_NAME],
+                "met" if raw else "not met",
+                CONDITION_DEBOUNCE_SECONDS,
+            )
+            return raw
+        return effective
 
     def projected_status(self, zone: dict) -> str | None:
         """What the zone's open/closed state would be if the unit were running.
@@ -992,8 +1083,11 @@ class SmarterZonesManager:
             self.capture_fan_base()
         if turned_on:
             # The unit is running again: the normal logic owns it, so any
-            # pending off-restore verification is obsolete.
+            # pending off-restore verification is obsolete. Conditions are
+            # honoured as they are right now (no debounce carry-over from
+            # before the off period).
             self._cancel_restore_verify()
+            self._reset_condition_tracking()
         await self.async_manage_all(turn_on=turned_on)
         # Guarantee every zone's status sensors reflect the new climate state,
         # even for zones the control logic skipped (deadband, manual, etc.).
@@ -1849,7 +1943,9 @@ class SmarterZonesManager:
 
         mode = self._mode(device_state)
         if mode in (ACMode.HEATING, ACMode.COOLING, ACMode.HEAT_COOL):
-            if not self._conditions_met(zone):
+            # Debounced: a brief condition flap (door opened and shut again)
+            # moves no dampers; see _effective_conditions_met.
+            if not self._effective_conditions_met(zone):
                 return (False, "a condition is not met")
             _LOGGER.debug("%s: all conditions met", name)
 

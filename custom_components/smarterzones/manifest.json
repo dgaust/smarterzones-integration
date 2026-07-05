@@ -1,7 +1,7 @@
 {
   "domain": "smarterzones",
   "name": "Smarter Zones",
-  "version": "2.6.2",
+  "version": "2.7.0",
   "documentation": "https://github.com/dgaust/smarterzones-integration",
   "issue_tracker": "https://github.com/dgaust/smarterzones-integration/issues",
   "codeowners": ["@dgaust"],
