@@ -229,3 +229,8 @@ Developed and tested against a Daikin AirBase (BRP15B61) through the official
   mode, matching how AirBase expresses automatic fan. The suffix is
   configurable for units that name the mode differently, and rejected values
   are ignored rather than retried.
+
+## License
+
+Released under the [MIT License](LICENSE) — free to use, modify, fork, and
+redistribute.
