@@ -10,7 +10,7 @@ to drive each zone. It started life as the `smarterzones` AppDaemon app and was
 rebuilt into a full UI-configurable integration (hub device + per-zone
 sub-devices, config flow, no helper entities).
 
-- Integration version: see `custom_components/smarterzones/manifest.json` (`2.7.0`).
+- Integration version: see `custom_components/smarterzones/manifest.json` (`2.7.1`).
 - Card version: see `CARD_VERSION` in
   `custom_components/smarterzones/www/smarterzones-zone-card.js` (`1.17.5`).
 - Bump both when you change the respective part (see Conventions).
@@ -100,7 +100,16 @@ README.md                            user-facing docs
   zones + common) all route through it. `_decide_common` judges "other zones open" from
   their **post-pass effective** state (their decision this pass, else live state), so it
   reacts to what the dampers will be, not what they are. The common zone is still
-  excluded from the generic turn-on open in `_decide_zone`.
+  excluded from the generic turn-on open in `_decide_zone`. `async_manage_zone` also
+  refreshes the fan speed and setpoint bias (a zone change alters their demand) — but
+  only once `_started` is set at the end of `async_setup`, so per-entity evaluations
+  during platform setup can't bias the unit before the hub switches have restored
+  their persisted base values.
+- **Auto power-on trigger** (`_handle_trigger_change`): only acts while the unit is
+  **off** — without that guard every trigger-sensor tick above/below the thresholds
+  would re-issue turn_on/set_hvac_mode, overriding a user's mode choice and turning
+  the unit straight back on after a deliberate power-off. Writes go through
+  `_async_climate_call` (retried); the mode is only set after turn_on succeeds.
 - **Projected status** sensor uses "would-be-open-if-turned-on" semantics, so it
   can differ from the live (hysteresis-held) state — that's expected.
 - **Auto fan speed**: demand = worst open-zone |current−target| ÷

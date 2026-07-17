@@ -19,3 +19,6 @@ venv/
 
 # Home Assistant local test config (if you symlink for testing)
 /config/
+
+# Unrelated Cosmos server compose files kept in this folder
+*.cosmos-compose.*

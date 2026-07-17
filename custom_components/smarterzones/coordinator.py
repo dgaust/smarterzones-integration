@@ -129,6 +129,10 @@ class SmarterZonesManager:
         self._cond_effective: dict[str, bool] = {}
         self._cond_pending: dict[str, tuple[bool, float]] = {}
         self._cond_timers: dict[str, object] = {}
+        # False until async_setup's first full pass. Per-zone evaluations during
+        # platform setup skip the fan/setpoint refresh so nothing biases the
+        # unit before the hub switches have restored their persisted state.
+        self._started = False
 
     # ----------------------------------------------------------- config views
 
@@ -621,6 +625,7 @@ class SmarterZonesManager:
             "unavailable",
             "unknown",
         )
+        self._started = True
         await self.async_manage_all(turn_on=active)
 
     @callback
@@ -1816,6 +1821,17 @@ class SmarterZonesManager:
         new_state = event.data.get("new_state")
         if new_state is None:
             return
+        # Auto power-ON only: while the unit is already running (or unreachable)
+        # the trigger must stay out of the way. Without this guard every sensor
+        # tick above the threshold would re-issue turn_on/set_hvac_mode, which
+        # overrides a mode the user chose and turns the unit straight back on
+        # after a deliberate power-off.
+        device_state = (self._device_state() or "").lower()
+        if device_state != "off":
+            _LOGGER.debug(
+                "Trigger change ignored: unit is '%s', not off", device_state or "?"
+            )
+            return
         try:
             temp = float(new_state.state)
         except (TypeError, ValueError):
@@ -1835,15 +1851,12 @@ class SmarterZonesManager:
             )
             return
         _LOGGER.info("Trigger temp %s -> powering on in %s mode", temp, mode)
-        await self.hass.services.async_call(
-            "climate", "turn_on", {"entity_id": self.climate_device}, blocking=True
-        )
-        await self.hass.services.async_call(
-            "climate",
-            "set_hvac_mode",
-            {"entity_id": self.climate_device, "hvac_mode": mode},
-            blocking=False,
-        )
+        if await self._async_climate_call("turn_on", {}, "auto power-on"):
+            await self._async_climate_call(
+                "set_hvac_mode",
+                {"hvac_mode": mode},
+                f"auto power-on mode '{mode}'",
+            )
 
     # ----------------------------------------------------------- zone logic
 
@@ -1853,8 +1866,18 @@ class SmarterZonesManager:
         await self._async_apply_setpoint()
 
     async def async_manage_zone(self, zone: dict, turn_on: bool = False) -> None:
-        """Re-evaluate a single zone (and reconcile the common zone) in one pass."""
+        """Re-evaluate a single zone (and reconcile the common zone) in one pass.
+
+        Also refreshes the fan speed and setpoint bias, since a zone change
+        (target adjusted, condition debounce expiring) changes the demand they
+        are computed from - but not during platform setup, where the hub
+        switches may not have restored their persisted state yet (the setup
+        pass in async_setup covers that).
+        """
         await self._async_apply_zone_decisions([zone], turn_on=turn_on)
+        if self._started:
+            await self._async_apply_fan()
+            await self._async_apply_setpoint()
 
     async def _async_apply_zone_decisions(
         self, zones: list[dict], turn_on: bool = False
