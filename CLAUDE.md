@@ -10,9 +10,11 @@ to drive each zone. It started life as the `smarterzones` AppDaemon app and was
 rebuilt into a full UI-configurable integration (hub device + per-zone
 sub-devices, config flow, no helper entities).
 
-- Integration version: see `custom_components/smarterzones/manifest.json` (`2.7.1`).
+- Integration version: see `custom_components/smarterzones/manifest.json` (`2.8.0`).
 - Card version: see `CARD_VERSION` in
-  `custom_components/smarterzones/www/smarterzones-zone-card.js` (`1.17.5`).
+  `custom_components/smarterzones/www/smarterzones-zone-card.js` (`1.18.0`)
+  — **also mirrored as `CARD_VERSION` in `const.py`**, which cache-busts the
+  auto-loaded `?v=` URL. Bump both together or browsers keep the stale card.
 - Bump both when you change the respective part (see Conventions).
 
 ## Hardware / HA context this was built against
@@ -184,6 +186,22 @@ README.md                            user-facing docs
 - The integration auto-serves it at `/smarterzones/smarterzones-zone-card.js` and
   tries to register it, but the reliable install is to add it as a Lovelace
   **Resource** (Settings → Dashboards → Resources, JavaScript Module).
+- **Load reliability**: the file is served **with** cache headers and auto-loaded
+  as `?v=<CARD_VERSION>`. Caching is a robustness feature, not just speed — an
+  uncached module is re-fetched on every page load, and if it hasn't defined its
+  custom element before Lovelace renders, the card shows "Configuration error".
+  `_async_register_card` only sets its done-flag *after* the static path is
+  actually served, so a failed attempt can be retried by a later setup/reload.
+- **Never let a transient failure stick**: `_renderError` resets `this._sig`.
+  The signature describes what's in the DOM, so leaving it set after the error
+  card replaced the DOM meant the next update skipped `_build` and `_update`
+  queried elements that no longer existed — the error card stayed forever.
+  `_discover()` also swallows its own exceptions (registries can be missing or
+  half-populated after a restart) and degrades to the **pending** state.
+- Build modes: `zone` (entities found), `pending` (a device is configured but its
+  entities aren't resolvable yet — shows "Waiting for this zone's entities…"),
+  `empty` (nothing configured — prompts to pick a device). They're distinct
+  signature values so the card rebuilds as soon as discovery succeeds.
 - It **auto-discovers** a zone's entities from the configured `device` by
   structural classification (number/switch/binary_sensor/sensor + device_class +
   name), so it doesn't hard-code entity IDs. The two zone switches are told apart
@@ -246,8 +264,11 @@ README.md                            user-facing docs
 
 ## Conventions
 
-- **Versioning**: card change → bump `CARD_VERSION`; integration change → bump
-  `manifest.json` `version`. Keep them independent.
+- **Versioning**: card change → bump `CARD_VERSION` **in both**
+  `www/smarterzones-zone-card.js` and `const.py` (they must match — `const.py`'s
+  copy is the `?v=` cache-buster on the auto-loaded URL); integration change →
+  bump `manifest.json` `version`. Card and integration versions stay independent
+  of each other.
 - **Prose, not bullets, in code comments where it aids clarity**; match the existing
   style (docstrings on logic-heavy methods explaining *why*).
 - **Theme colors only** in the card; no fixed reds/greens or mode-accent colors.

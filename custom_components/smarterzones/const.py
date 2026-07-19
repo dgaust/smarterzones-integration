@@ -13,6 +13,11 @@ PLATFORMS: list[Platform] = [
     Platform.SENSOR,
 ]
 
+# Cache-busting version for the auto-loaded Lovelace card. Must match
+# CARD_VERSION in www/smarterzones-zone-card.js - bump both together so
+# browsers pick up a changed card instead of serving a stale cached copy.
+CARD_VERSION = "1.18.0"
+
 MANUFACTURER = "Smarter Zones"
 HUB_MODEL = "Zone controller"
 ZONE_MODEL = "Zone"

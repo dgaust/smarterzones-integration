@@ -9,7 +9,7 @@
  * versions without a build step.
  */
 
-const CARD_VERSION = "1.17.5";
+const CARD_VERSION = "1.18.0";
 
 function fireEvent(node, type, detail) {
   const event = new Event(type, { bubbles: true, composed: true, cancelable: false });
@@ -76,7 +76,14 @@ class SmarterZonesZoneCard extends HTMLElement {
     if (!this._config) return;
     try {
       this._discover();
-      const mode = this._ids.target ? "zone" : "empty";
+      // "pending" = a device is configured but its entities aren't resolvable
+      // yet (registry still loading). Distinct from "empty" (nothing configured)
+      // so the signature changes once discovery succeeds and the card rebuilds.
+      const mode = this._ids.target
+        ? "zone"
+        : this._config.device
+          ? "pending"
+          : "empty";
       const sig = [
         mode,
         this._config.device || "",
@@ -106,6 +113,11 @@ class SmarterZonesZoneCard extends HTMLElement {
       `<style>${this._styles()}</style>` +
       `<ha-card><div class="empty"><ha-icon icon="mdi:alert-circle-outline"></ha-icon>` +
       `<div>Zone card error: ${msg}</div></div></ha-card>`;
+    // The error card replaced the DOM, so the cached build signature no longer
+    // describes what's on screen. Clearing it forces a full rebuild on the next
+    // update - otherwise a single transient failure would leave the error card
+    // showing forever, since _update() would just query a DOM that isn't there.
+    this._sig = null;
     // eslint-disable-next-line no-console
     console.error("smarterzones-zone-card:", err);
   }
@@ -128,10 +140,15 @@ class SmarterZonesZoneCard extends HTMLElement {
     this._deviceName = "Zone";
     if (!deviceId || !hass) return;
 
+    // Discovery must never throw: the entity/device registries can be missing or
+    // half-populated (right after a restart, or while the websocket reconnects).
+    // Failing softly leaves _ids empty, which renders the "waiting" state and
+    // retries on the next update, instead of wedging the card into an error.
+    try {
     const entities = hass.entities || {};
     const states = hass.states || {};
     for (const e of Object.values(entities)) {
-      if (e.device_id !== deviceId) continue;
+      if (!e || e.device_id !== deviceId) continue;
       const id = e.entity_id;
       const domain = id.split(".")[0];
       const st = states[id];
@@ -174,6 +191,10 @@ class SmarterZonesZoneCard extends HTMLElement {
 
     const dev = hass.devices && hass.devices[deviceId];
     if (dev) this._deviceName = dev.name_by_user || dev.name || "Zone";
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.warn("smarterzones-zone-card: entity discovery failed, will retry", err);
+    }
   }
 
   _moreInfo(entityId) {
@@ -430,12 +451,21 @@ class SmarterZonesZoneCard extends HTMLElement {
     const iconLabels = !!c.icon_labels;
 
     if (!hasZone) {
+      // A configured device whose entities haven't appeared yet is a transient
+      // startup state, not a misconfiguration - say so rather than telling the
+      // user to pick a device they already picked. It re-renders automatically
+      // once discovery succeeds.
+      const pending = !!c.device;
       this.shadowRoot.innerHTML = `
         <style>${this._styles()}</style>
         <ha-card>
           <div class="empty">
-            <ha-icon icon="mdi:home-thermometer-outline"></ha-icon>
-            <div>Pick a SmarterZones <b>zone device</b> in the card settings.</div>
+            <ha-icon icon="${pending ? "mdi:timer-sand" : "mdi:home-thermometer-outline"}"></ha-icon>
+            <div>${
+              pending
+                ? "Waiting for this zone's entities…<br><small>If this persists, the zone device may have been removed.</small>"
+                : "Pick a SmarterZones <b>zone device</b> in the card settings."
+            }</div>
           </div>
         </ha-card>`;
       this._built = true;

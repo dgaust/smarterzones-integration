@@ -10,7 +10,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers.device_registry import DeviceEntry
 
-from .const import CONF_ZONE_ID, CONF_ZONES, DOMAIN, PLATFORMS
+from .const import CARD_VERSION, CONF_ZONE_ID, CONF_ZONES, DOMAIN, PLATFORMS
 from .coordinator import SmarterZonesManager
 from .entity import hub_device_info
 
@@ -27,20 +27,26 @@ async def _async_register_card(hass: HomeAssistant) -> None:
 
     Best-effort: any failure here just means the user adds the resource
     manually, so it must never block integration setup.
+
+    The file is served *with* cache headers and auto-loaded with a
+    ``?v=<CARD_VERSION>`` query string. Caching matters for reliability, not
+    just speed: an uncached module is re-fetched on every page load, and if it
+    hasn't defined its custom element by the time Lovelace renders the view, the
+    card shows "Configuration error" instead. The version string busts that
+    cache whenever the card actually changes.
     """
     if hass.data.get(_CARD_REGISTERED):
         return
-    hass.data[_CARD_REGISTERED] = True
     card_path = os.path.join(os.path.dirname(__file__), "www", "smarterzones-zone-card.js")
     try:
         from homeassistant.components.http import StaticPathConfig
 
         await hass.http.async_register_static_paths(
-            [StaticPathConfig(_CARD_URL, card_path, False)]
+            [StaticPathConfig(_CARD_URL, card_path, True)]
         )
     except Exception:  # noqa: BLE001 - fall back to the legacy sync API
         try:
-            hass.http.register_static_path(_CARD_URL, card_path, False)
+            hass.http.register_static_path(_CARD_URL, card_path, True)
         except Exception as err:  # noqa: BLE001
             _LOGGER.warning(
                 "Could not serve the SmarterZones card (%s); add %s as a "
@@ -49,17 +55,21 @@ async def _async_register_card(hass: HomeAssistant) -> None:
                 card_path,
             )
             return
+    # Only mark as done once the file is actually being served, so a failed
+    # attempt can be retried by a later entry setup or a reload.
+    hass.data[_CARD_REGISTERED] = True
+    versioned_url = f"{_CARD_URL}?v={CARD_VERSION}"
     try:
         from homeassistant.components.frontend import add_extra_js_url
 
-        add_extra_js_url(hass, _CARD_URL)
-        _LOGGER.debug("Registered SmarterZones Lovelace card at %s", _CARD_URL)
+        add_extra_js_url(hass, versioned_url)
+        _LOGGER.debug("Registered SmarterZones Lovelace card at %s", versioned_url)
     except Exception as err:  # noqa: BLE001
         _LOGGER.warning(
             "Could not auto-load the SmarterZones card (%s); add the resource "
             "%s (JavaScript module) under Settings > Dashboards > Resources",
             err,
-            _CARD_URL,
+            versioned_url,
         )
 
 
