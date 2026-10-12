@@ -10,9 +10,9 @@ to drive each zone. It started life as the `smarterzones` AppDaemon app and was
 rebuilt into a full UI-configurable integration (hub device + per-zone
 sub-devices, config flow, no helper entities).
 
-- Integration version: see `custom_components/smarterzones/manifest.json` (`2.8.2`).
+- Integration version: see `custom_components/smarterzones/manifest.json` (`2.8.3`).
 - Card version: see `CARD_VERSION` in
-  `custom_components/smarterzones/www/smarterzones-zone-card.js` (`1.18.0`)
+  `custom_components/smarterzones/www/smarterzones-zone-card.js` (`1.18.1`)
   — **also mirrored as `CARD_VERSION` in `const.py`**, which cache-busts the
   auto-loaded `?v=` URL. Bump both together or browsers keep the stale card.
 - Bump both when you change the respective part (see Conventions).
@@ -204,6 +204,19 @@ README.md                            user-facing docs
   was force-closed. Once the element is defined, Lovelace's `whenDefined` hook
   rebuilds the error cards. The loader needs no fetch itself, and is fully
   percent-encoded so it is safe inside HA's quoted `import("...")`.
+- **Register with the current registry, not once** (`defineElements` at the end of
+  the card file). HA's app bundle installs `@webcomponents/scoped-custom-element-registry`,
+  which *replaces* `window.customElements`; the replacement's `get`/`whenDefined`
+  only know elements defined through it. The card file is auto-loaded at page
+  start and on a phone often runs *before* the app bundle, so a plain one-shot
+  `customElements.define` landed on the native registry and Lovelace then reported
+  "Custom element doesn't exist" for every card created afterwards (switching
+  views, resuming the app) — permanently, since `whenDefined` never resolved.
+  `defineElements` re-checks twice a second (and on visibility change) and defines
+  any missing tag on whichever registry is current; that also resolves the
+  `whenDefined` Lovelace is waiting on, so the error cards rebuild themselves.
+  Verified in Chromium against the real polyfill (0.0.10). Don't go back to a bare
+  `if (!customElements.get(...)) customElements.define(...)`.
 - **Never let a transient failure stick**: `_renderError` resets `this._sig`.
   The signature describes what's in the DOM, so leaving it set after the error
   card replaced the DOM meant the next update skipped `_build` and `_update`
