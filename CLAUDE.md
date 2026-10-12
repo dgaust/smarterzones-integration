@@ -10,7 +10,7 @@ to drive each zone. It started life as the `smarterzones` AppDaemon app and was
 rebuilt into a full UI-configurable integration (hub device + per-zone
 sub-devices, config flow, no helper entities).
 
-- Integration version: see `custom_components/smarterzones/manifest.json` (`2.8.1`).
+- Integration version: see `custom_components/smarterzones/manifest.json` (`2.8.2`).
 - Card version: see `CARD_VERSION` in
   `custom_components/smarterzones/www/smarterzones-zone-card.js` (`1.18.0`)
   — **also mirrored as `CARD_VERSION` in `const.py`**, which cache-busts the
@@ -194,8 +194,8 @@ README.md                            user-facing docs
   actually served, so a failed attempt can be retried by a later setup/reload.
 - **The auto-load goes through a retrying loader** (`_card_loader_url` in
   `__init__.py`): the extra JS URL is a `data:` module that imports the
-  versioned card and, on failure, retries with a fresh `&retry=N` (backoff to
-  30s, up to 10 timed retries, plus on `online`/visible) until
+  versioned card and, on failure, retries with a fresh `&retry=N` (1s, 2s, 3s…
+  capped at 15s, up to 40 timed retries, plus on `online`/visible) until
   `customElements.get("smarterzones-zone-card")`. Why: HA imports each extra
   module once per page and a failed module URL stays failed for that page
   (re-importing it doesn't even hit the network — verified in Chromium). The

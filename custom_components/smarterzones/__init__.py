@@ -30,25 +30,32 @@ _CARD_REGISTERED = f"{DOMAIN}_card_registered"
 # reloads before its connection is back, so that one import fails and every
 # card shows "Configuration error" until the app is force-closed. This loader
 # runs from a data: URL (it needs no fetch of its own) and retries the card
-# with a fresh ?retry= each time; once the element is defined, Lovelace's own
-# whenDefined hook rebuilds the error cards into real ones.
+# with a fresh ?retry= each time (1s, 2s, 3s ... capped at 15s, and at once
+# when the device comes back online or the app is shown); once the element is
+# defined, Lovelace's own whenDefined hook rebuilds the error cards into real
+# ones. Failed attempts are noted on window (__cardLoad_<tag>) so the card,
+# once it does load, can report them to Home Assistant's log.
 _CARD_LOADER_JS = """\
 const tag = __TAG__;
 const url = new URL(__PATH__, location.origin).href;
-let attempt = 0;
+const note = { failures: 0, since: 0, last: "" };
 let timer = 0;
 let busy = false;
 const load = () => {
   clearTimeout(timer);
   if (busy || customElements.get(tag)) return;
   busy = true;
-  import(attempt ? `${url}${url.includes("?") ? "&" : "?"}retry=${attempt}` : url)
+  const n = note.failures;
+  import(n ? `${url}${url.includes("?") ? "&" : "?"}retry=${n}` : url)
     .then(() => { busy = false; })
     .catch((err) => {
       busy = false;
-      attempt += 1;
-      console.warn(`${tag}: load failed (attempt ${attempt}), will retry`, err);
-      if (attempt <= 10) timer = setTimeout(load, Math.min(30000, 1000 * 2 ** attempt));
+      if (!n) note.since = performance.now();
+      note.failures += 1;
+      note.last = String((err && err.message) || err);
+      window[`__cardLoad_${tag}`] = note;
+      console.warn(`${tag}: load failed (attempt ${note.failures}), will retry`, err);
+      if (note.failures <= 40) timer = setTimeout(load, Math.min(15000, 1000 * note.failures));
     });
 };
 addEventListener("online", load);
