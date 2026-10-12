@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import os
+from urllib.parse import quote
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
@@ -20,6 +22,51 @@ type SmarterZonesConfigEntry = ConfigEntry[SmarterZonesManager]
 
 _CARD_URL = "/smarterzones/smarterzones-zone-card.js"
 _CARD_REGISTERED = f"{DOMAIN}_card_registered"
+
+# Loads the card module and keeps retrying until its custom element exists.
+# Home Assistant imports each extra module exactly once per page, and a failed
+# module URL stays failed for the life of that page - re-importing it doesn't
+# even reach the network. A phone app resuming from the background often
+# reloads before its connection is back, so that one import fails and every
+# card shows "Configuration error" until the app is force-closed. This loader
+# runs from a data: URL (it needs no fetch of its own) and retries the card
+# with a fresh ?retry= each time; once the element is defined, Lovelace's own
+# whenDefined hook rebuilds the error cards into real ones.
+_CARD_LOADER_JS = """\
+const tag = __TAG__;
+const url = new URL(__PATH__, location.origin).href;
+let attempt = 0;
+let timer = 0;
+let busy = false;
+const load = () => {
+  clearTimeout(timer);
+  if (busy || customElements.get(tag)) return;
+  busy = true;
+  import(attempt ? `${url}${url.includes("?") ? "&" : "?"}retry=${attempt}` : url)
+    .then(() => { busy = false; })
+    .catch((err) => {
+      busy = false;
+      attempt += 1;
+      console.warn(`${tag}: load failed (attempt ${attempt}), will retry`, err);
+      if (attempt <= 10) timer = setTimeout(load, Math.min(30000, 1000 * 2 ** attempt));
+    });
+};
+addEventListener("online", load);
+document.addEventListener("visibilitychange", () => { if (!document.hidden) load(); });
+load();
+"""
+
+
+def _card_loader_url(path: str, tag: str) -> str:
+    """Return a data: module URL that loads ``path`` until ``tag`` is defined.
+
+    Fully percent-encoded, so it is safe to drop into the quoted
+    ``import("...")`` Home Assistant writes into index.html.
+    """
+    code = _CARD_LOADER_JS.replace("__PATH__", json.dumps(path)).replace(
+        "__TAG__", json.dumps(tag)
+    )
+    return "data:text/javascript," + quote(code, safe="")
 
 
 async def _async_register_card(hass: HomeAssistant) -> None:
@@ -62,7 +109,7 @@ async def _async_register_card(hass: HomeAssistant) -> None:
     try:
         from homeassistant.components.frontend import add_extra_js_url
 
-        add_extra_js_url(hass, versioned_url)
+        add_extra_js_url(hass, _card_loader_url(versioned_url, "smarterzones-zone-card"))
         _LOGGER.debug("Registered SmarterZones Lovelace card at %s", versioned_url)
     except Exception as err:  # noqa: BLE001
         _LOGGER.warning(

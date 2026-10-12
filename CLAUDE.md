@@ -10,7 +10,7 @@ to drive each zone. It started life as the `smarterzones` AppDaemon app and was
 rebuilt into a full UI-configurable integration (hub device + per-zone
 sub-devices, config flow, no helper entities).
 
-- Integration version: see `custom_components/smarterzones/manifest.json` (`2.8.0`).
+- Integration version: see `custom_components/smarterzones/manifest.json` (`2.8.1`).
 - Card version: see `CARD_VERSION` in
   `custom_components/smarterzones/www/smarterzones-zone-card.js` (`1.18.0`)
   — **also mirrored as `CARD_VERSION` in `const.py`**, which cache-busts the
@@ -192,6 +192,18 @@ README.md                            user-facing docs
   custom element before Lovelace renders, the card shows "Configuration error".
   `_async_register_card` only sets its done-flag *after* the static path is
   actually served, so a failed attempt can be retried by a later setup/reload.
+- **The auto-load goes through a retrying loader** (`_card_loader_url` in
+  `__init__.py`): the extra JS URL is a `data:` module that imports the
+  versioned card and, on failure, retries with a fresh `&retry=N` (backoff to
+  30s, up to 10 timed retries, plus on `online`/visible) until
+  `customElements.get("smarterzones-zone-card")`. Why: HA imports each extra
+  module once per page and a failed module URL stays failed for that page
+  (re-importing it doesn't even hit the network — verified in Chromium). The
+  Android app reloads on resume from background before its network is back, so
+  the one import failed and the card stayed "Configuration error" until the app
+  was force-closed. Once the element is defined, Lovelace's `whenDefined` hook
+  rebuilds the error cards. The loader needs no fetch itself, and is fully
+  percent-encoded so it is safe inside HA's quoted `import("...")`.
 - **Never let a transient failure stick**: `_renderError` resets `this._sig`.
   The signature describes what's in the DOM, so leaving it set after the error
   card replaced the DOM meant the next update skipped `_build` and `_update`
