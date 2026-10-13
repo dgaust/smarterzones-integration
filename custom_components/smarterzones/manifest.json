@@ -1,13 +1,19 @@
 {
   "domain": "smarterzones",
   "name": "Smarter Zones",
-  "version": "2.8.3",
-  "documentation": "https://github.com/dgaust/smarterzones-integration",
-  "issue_tracker": "https://github.com/dgaust/smarterzones-integration/issues",
-  "codeowners": ["@dgaust"],
+  "codeowners": [
+    "@dgaust"
+  ],
   "config_flow": true,
+  "dependencies": [
+    "http",
+    "frontend",
+    "lovelace"
+  ],
+  "documentation": "https://github.com/dgaust/smarterzones-integration",
   "integration_type": "hub",
   "iot_class": "local_push",
-  "dependencies": [],
-  "requirements": []
+  "issue_tracker": "https://github.com/dgaust/smarterzones-integration/issues",
+  "requirements": [],
+  "version": "2.9.0"
 }

@@ -212,9 +212,11 @@ show_deviation: true
 icon_labels: false
 ```
 
-If the card does not appear in the card picker, add
-`/smarterzones/smarterzones-zone-card.js` manually as a **JavaScript module**
-under **Settings → Dashboards → Resources**, then refresh the browser.
+The integration registers the card as a dashboard resource for you (and keeps
+it pointed at the current version), so there is nothing to add by hand. If your
+dashboard resources are managed in YAML it can't, and the log says exactly which
+resource to add: `/smarterzones/smarterzones-zone-card.js?v=<version>` as a
+**JavaScript module**. Refresh the browser after an update.
 
 ## Notes for Daikin AirBase units
 

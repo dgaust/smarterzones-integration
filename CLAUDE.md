@@ -10,11 +10,11 @@ to drive each zone. It started life as the `smarterzones` AppDaemon app and was
 rebuilt into a full UI-configurable integration (hub device + per-zone
 sub-devices, config flow, no helper entities).
 
-- Integration version: see `custom_components/smarterzones/manifest.json` (`2.8.3`).
+- Integration version: see `custom_components/smarterzones/manifest.json` (`2.9.0`).
 - Card version: see `CARD_VERSION` in
-  `custom_components/smarterzones/www/smarterzones-zone-card.js` (`1.18.1`)
+  `custom_components/smarterzones/www/smarterzones-zone-card.js` (`1.19.0`)
   — **also mirrored as `CARD_VERSION` in `const.py`**, which cache-busts the
-  auto-loaded `?v=` URL. Bump both together or browsers keep the stale card.
+  dashboard-resource `?v=` URL. Bump both together or browsers keep the stale card.
 - Bump both when you change the respective part (see Conventions).
 
 ## Hardware / HA context this was built against
@@ -183,40 +183,32 @@ README.md                            user-facing docs
 ## The Lovelace card (`www/smarterzones-zone-card.js`)
 
 - Plain `HTMLElement` custom element — **no** Lit/CDN/build step. Keep it dependency-free.
-- The integration auto-serves it at `/smarterzones/smarterzones-zone-card.js` and
-  tries to register it, but the reliable install is to add it as a Lovelace
-  **Resource** (Settings → Dashboards → Resources, JavaScript Module).
-- **Load reliability**: the file is served **with** cache headers and auto-loaded
-  as `?v=<CARD_VERSION>`. Caching is a robustness feature, not just speed — an
-  uncached module is re-fetched on every page load, and if it hasn't defined its
-  custom element before Lovelace renders, the card shows "Configuration error".
-  `_async_register_card` only sets its done-flag *after* the static path is
-  actually served, so a failed attempt can be retried by a later setup/reload.
-- **The auto-load goes through a retrying loader** (`_card_loader_url` in
-  `__init__.py`): the extra JS URL is a `data:` module that imports the
-  versioned card and, on failure, retries with a fresh `&retry=N` (1s, 2s, 3s…
-  capped at 15s, up to 40 timed retries, plus on `online`/visible) until
-  `customElements.get("smarterzones-zone-card")`. Why: HA imports each extra
-  module once per page and a failed module URL stays failed for that page
-  (re-importing it doesn't even hit the network — verified in Chromium). The
-  Android app reloads on resume from background before its network is back, so
-  the one import failed and the card stayed "Configuration error" until the app
-  was force-closed. Once the element is defined, Lovelace's `whenDefined` hook
-  rebuilds the error cards. The loader needs no fetch itself, and is fully
-  percent-encoded so it is safe inside HA's quoted `import("...")`.
-- **Register with the current registry, not once** (`defineElements` at the end of
-  the card file). HA's app bundle installs `@webcomponents/scoped-custom-element-registry`,
-  which *replaces* `window.customElements`; the replacement's `get`/`whenDefined`
-  only know elements defined through it. The card file is auto-loaded at page
-  start and on a phone often runs *before* the app bundle, so a plain one-shot
-  `customElements.define` landed on the native registry and Lovelace then reported
+- **Loading = a dashboard resource the integration manages** (`frontend.py`,
+  called from `_async_register_card`). The file is served at
+  `/smarterzones/smarterzones-zone-card.js` with cache headers, and exactly one
+  storage-mode Lovelace resource points at it as `?v=<CARD_VERSION>`: created
+  if missing, updated in place on upgrade, duplicates (e.g. an old hand-added
+  copy) removed, deleted in `async_remove_entry` with the last entry. This
+  mirrors HA core's marketplace and is how HACS cards load. YAML resource mode
+  can't be written, so it logs the exact resource to add. `lovelace` is a
+  manifest dependency so the collection exists at setup.
+- **Why not `add_extra_js_url`** (what this used to do, with a `data:` retry
+  loader and a registry poller bolted on): extra modules are imported at page
+  start, before HA's frontend boots. HA's app bundle then installs
+  `@webcomponents/scoped-custom-element-registry`, which *replaces*
+  `window.customElements` with a registry that only knows elements defined
+  through it. On phones the card often won that race, so Lovelace reported
   "Custom element doesn't exist" for every card created afterwards (switching
-  views, resuming the app) — permanently, since `whenDefined` never resolved.
-  `defineElements` re-checks twice a second (and on visibility change) and defines
-  any missing tag on whichever registry is current; that also resolves the
-  `whenDefined` Lovelace is waiting on, so the error cards rebuild themselves.
-  Verified in Chromium against the real polyfill (0.0.10). Don't go back to a bare
-  `if (!customElements.get(...)) customElements.define(...)`.
+  views, resuming the app), permanently. Resources are loaded by Lovelace once
+  the frontend is running, so the card is always defined on the right
+  registry. Don't go back to extra modules for a card.
+- **Card lifecycle follows HA's custom-card docs**: `setConfig` validates and
+  stores, `set hass` stores, and rendering is queued as a microtask
+  (`_queueRender` -> `_render`), never run inside a setter. hui-card treats an
+  exception from those setters as fatal (a permanent "Configuration error"
+  until reload). `_render` catches its own failures, shows them on the card,
+  and `reportError` re-throws them on a fresh task (once per message) so HA's
+  frontend logs them under Settings -> System -> Logs.
 - **Never let a transient failure stick**: `_renderError` resets `this._sig`.
   The signature describes what's in the DOM, so leaving it set after the error
   card replaced the DOM meant the next update skipped `_build` and `_update`
@@ -291,7 +283,7 @@ README.md                            user-facing docs
 
 - **Versioning**: card change → bump `CARD_VERSION` **in both**
   `www/smarterzones-zone-card.js` and `const.py` (they must match — `const.py`'s
-  copy is the `?v=` cache-buster on the auto-loaded URL); integration change →
+  copy is the `?v=` cache-buster on the dashboard resource URL); integration change →
   bump `manifest.json` `version`. Card and integration versions stay independent
   of each other.
 - **Prose, not bullets, in code comments where it aids clarity**; match the existing
@@ -313,6 +305,9 @@ python3 -c "import json;[json.load(open('custom_components/smarterzones/'+f)) fo
 
 # Card syntax
 node --check custom_components/smarterzones/www/smarterzones-zone-card.js
+
+# Dashboard-resource registration (no HA needed)
+python3 tests/test_frontend.py
 ```
 
 A heavier **stub-import harness** was used during development to import the modules
@@ -342,7 +337,8 @@ zip -r smarterzones_package.zip custom_components brand README.md -x '*__pycache
 
 ## Suggested next steps / open ideas
 
-- Add a `tests/` package with the fake-`self` unit tests for the fan logic and
-  turn-on detection so they're version-controlled and runnable in CI.
+- Extend `tests/` (so far `test_frontend.py`, the dashboard-resource logic) with
+  the fake-`self` unit tests for the fan logic and turn-on detection, and run
+  them in CI.
 - Consider a HACS release (`hacs.json` is included; verify the structure).
 - Optional: an integration-level diagnostics dump for support.

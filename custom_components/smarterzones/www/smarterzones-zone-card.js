@@ -9,7 +9,7 @@
  * versions without a build step.
  */
 
-const CARD_VERSION = "1.18.1";
+const CARD_VERSION = "1.19.0";
 
 function fireEvent(node, type, detail) {
   const event = new Event(type, { bubbles: true, composed: true, cancelable: false });
@@ -17,6 +17,23 @@ function fireEvent(node, type, detail) {
   node.dispatchEvent(event);
   return event;
 }
+
+/*
+ * A caught render error is shown on the card, and still reaches Home
+ * Assistant's log: it's re-thrown on a fresh task, where the frontend's own
+ * uncaught-error handler records it (Settings > System > Logs). Once per
+ * message, so a card failing on every state change can't flood the log.
+ */
+const REPORTED = new Set();
+const reportError = (source, err) => {
+  const message = `${source}: ${(err && err.message) || err}`;
+  if (REPORTED.has(message)) return;
+  REPORTED.add(message);
+  setTimeout(() => {
+    // Duck-typed: an Error from another realm fails instanceof.
+    throw err && typeof err.message === "string" ? err : new Error(message);
+  });
+};
 
 class SmarterZonesZoneCard extends HTMLElement {
   static getConfigElement() {
@@ -63,17 +80,53 @@ class SmarterZonesZoneCard extends HTMLElement {
     return mode === "hidden" ? "compact" : mode;
   }
 
+  /*
+   * Lifecycle, as Home Assistant's custom card docs lay it out: setConfig
+   * validates and stores, hass stores, and rendering happens separately -
+   * queued as a microtask, never inside either setter. Home Assistant's card
+   * wrapper treats an exception from those setters as fatal (a permanent
+   * "Configuration error"), so nothing that can fail runs there. The queue
+   * also coalesces the setConfig + hass pair and bursts of state changes.
+   */
+  constructor() {
+    super();
+    this.attachShadow({ mode: "open" });
+    this._queued = false;
+    this._sig = null;
+  }
+
   setConfig(config) {
     if (!config) throw new Error("Invalid configuration");
     this._config = Object.assign({}, config);
     this._config.status_display = this._statusMode(this._config);
     this._sig = null;
-    if (!this.shadowRoot) this.attachShadow({ mode: "open" });
+    this._queueRender();
   }
 
   set hass(hass) {
     this._hass = hass;
-    if (!this._config) return;
+    this._queueRender();
+  }
+
+  get hass() {
+    return this._hass;
+  }
+
+  connectedCallback() {
+    this._queueRender();
+  }
+
+  _queueRender() {
+    if (this._queued) return;
+    this._queued = true;
+    Promise.resolve().then(() => {
+      this._queued = false;
+      this._render();
+    });
+  }
+
+  _render() {
+    if (!this._config || !this._hass) return;
     try {
       this._discover();
       // "pending" = a device is configured but its entities aren't resolvable
@@ -107,7 +160,6 @@ class SmarterZonesZoneCard extends HTMLElement {
   }
 
   _renderError(err) {
-    if (!this.shadowRoot) this.attachShadow({ mode: "open" });
     const msg = (err && err.message) || String(err);
     this.shadowRoot.innerHTML =
       `<style>${this._styles()}</style>` +
@@ -118,8 +170,7 @@ class SmarterZonesZoneCard extends HTMLElement {
     // update - otherwise a single transient failure would leave the error card
     // showing forever, since _update() would just query a DOM that isn't there.
     this._sig = null;
-    // eslint-disable-next-line no-console
-    console.error("smarterzones-zone-card:", err);
+    reportError("smarterzones-zone-card", err);
   }
 
   getCardSize() {
@@ -997,39 +1048,15 @@ class SmarterZonesZoneCardEditor extends HTMLElement {
 }
 
 /*
- * Register the custom elements with whichever registry is current - and again
- * whenever it changes.
- *
- * Home Assistant's app bundle installs a scoped-custom-element-registry
- * polyfill that *replaces* window.customElements. The replacement only knows
- * elements defined through it. This file is auto-loaded at the very start of
- * the page, so on a phone (cached file, slow app bundle) it can run first and
- * define its cards on the browser's native registry; once the polyfill takes
- * over, Lovelace's customElements.get() can't see them, a newly created card
- * (switching views, returning to the app) shows "Custom element doesn't
- * exist", and its whenDefined() never resolves. Re-defining on the new
- * registry fixes that, and resolves the whenDefined Lovelace is waiting on,
- * so the error cards rebuild themselves. The check is a few map lookups, so
- * it simply runs twice a second.
+ * Define each element only where it's missing, so a second copy of this file
+ * (say, a leftover hand-added resource) can't throw "already been used". The
+ * integration registers this file as a dashboard resource, so it runs after
+ * Home Assistant's frontend has set up its custom-element registry.
  */
 const defineElements = (definitions) => {
-  const done = new WeakSet();
-  const ensure = () => {
-    const registry = window.customElements;
-    if (!registry || done.has(registry)) return;
-    for (const [tag, cls] of definitions) {
-      try {
-        if (!registry.get(tag)) registry.define(tag, cls);
-      } catch (err) {
-        // eslint-disable-next-line no-console
-        console.warn(`${tag}: could not register with the current registry`, err);
-      }
-    }
-    done.add(registry);
-  };
-  ensure();
-  setInterval(ensure, 500);
-  document.addEventListener("visibilitychange", ensure);
+  for (const [tag, cls] of definitions) {
+    if (!customElements.get(tag)) customElements.define(tag, cls);
+  }
 };
 
 defineElements([
