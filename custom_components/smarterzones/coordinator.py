@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import re
 import time
 from enum import Enum
@@ -71,6 +72,15 @@ from .const import (
 _LOGGER = logging.getLogger(__name__)
 
 
+def _num(value) -> float | None:
+    """Return value as a finite number, or None (missing, text, nan or inf)."""
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if math.isfinite(number) else None
+
+
 class ACMode(Enum):
     COOLING = 1
     HEATING = 2
@@ -86,59 +96,61 @@ class SmarterZonesManager:
         self.hass = hass
         self.entry = entry
         self._unsubs: list = []
-        # Pushed in by the per-zone entities:
+        # The config can't change while this manager runs: saving options
+        # reloads the entry, which builds a new manager. So read it once.
+        self._conf: dict = {**entry.data, **entry.options}
+        self._zones_by_id: dict[str, dict] = {}
+        # Entity id -> zones that watch it (room sensor or condition entity).
+        self._zones_by_entity: dict[str, list[dict]] = {}
+        for zone in self._conf.get(CONF_ZONES, []):
+            self._zones_by_id[zone[CONF_ZONE_ID]] = zone
+            watched = {zone[CONF_LOCAL_SENSOR]} | {
+                c[CONF_CONDITION_ENTITY] for c in zone.get(CONF_CONDITIONS, [])
+            }
+            for entity_id in watched:
+                self._zones_by_entity.setdefault(entity_id, []).append(zone)
+        # Control passes await service calls, so two events arriving together
+        # could otherwise interleave and command the same damper twice.
+        self._pass_lock = asyncio.Lock()
+
+        # Values pushed in by the per-zone entities.
         self._enabled: dict[str, bool] = {}   # smart-control switch
         self._targets: dict[str, float] = {}  # target-temperature number
         self._offset_values: dict[str, dict[str, float]] = {}  # offset numbers
-        # Listeners that want to know when a zone's open/closed decision changes:
+        # Entities to refresh when a zone (or the hub) is re-evaluated.
         self._status_listeners: dict[str, list] = {}
-        # Hub-level listeners (e.g. the fan-decision sensor), refreshed whenever
-        # the fan logic runs or the auto-fan toggle changes:
         self._hub_listeners: list = []
-        # Runtime override for the auto-fan-speed toggle (None = follow config):
+
+        # Runtime settings from the hub switches/numbers (None = follow config).
         self._auto_fan_speed_override: bool | None = None
-        # Runtime full-speed deviation (degrees), driven by the hub number entity:
         self._fan_full_deviation: float = FAN_FULL_DEVIATION
-        # Runtime override for the auto-setpoint toggle (None = follow config):
         self._auto_setpoint_override: bool | None = None
-        # Runtime max setpoint bias (degrees), driven by the hub number entity:
         self._setpoint_max_bias: float = SETPOINT_MAX_BIAS
-        # The unit's target temperature as it was when auto-setpoint was switched
-        # on (the user's "base" level), re-instated when it's switched off:
+
+        # The user's own setpoint and fan mode, remembered at power-on and put
+        # back at power-off. The "last commanded/restored" values let us spot a
+        # restore the unit ignored, so we never mistake our own value for theirs.
         self._setpoint_base: float | None = None
-        # The last biased setpoint we commanded, and the last base we tried to
-        # restore. Together they let the turn-on capture recognise a display that
-        # is still *our own* bias (an off-state restore some units ignore) and
-        # fall back to the real base instead of corrupting it:
         self._last_commanded_setpoint: float | None = None
         self._last_restored_base: float | None = None
-        # The fan-mode equivalents: the mode the unit had at power-on (restored
-        # when it turns off), the last speed auto-fan commanded, and the last
-        # mode we tried to restore:
         self._fan_base: str | None = None
         self._last_commanded_fan: str | None = None
         self._last_restored_fan: str | None = None
-        # Pending delayed check that the off-state restores actually took:
+        # Pending re-check that an off-state restore actually took.
         self._restore_verify_unsub = None
         self._restore_verify_attempts = 0
-        # Condition debounce, per zone id: the condition state the control
-        # logic is acting on, a pending flip (target state, monotonic start
-        # time), and the one-shot timers that re-evaluate when a pending flip
-        # has held long enough. Keeps a flapping door sensor from rapidly
-        # cycling a damper; displays still show the raw state.
+
+        # Condition debounce, per zone: the state we're acting on, a pending
+        # change (new state, when it started) and its re-check timer.
         self._cond_effective: dict[str, bool] = {}
         self._cond_pending: dict[str, tuple[bool, float]] = {}
         self._cond_timers: dict[str, object] = {}
-        # False until async_setup's first full pass. Per-zone evaluations during
-        # platform setup skip the fan/setpoint refresh so nothing biases the
-        # unit before the hub switches have restored their persisted state.
+        # Set at the end of async_setup. Until then, entity registrations only
+        # evaluate dampers, so nothing touches the unit before the hub switches
+        # have restored their saved state.
         self._started = False
 
     # ----------------------------------------------------------- config views
-
-    @property
-    def _conf(self) -> dict:
-        return {**self.entry.data, **self.entry.options}
 
     @property
     def climate_device(self) -> str:
@@ -208,11 +220,8 @@ class SmarterZonesManager:
 
     def set_fan_full_deviation(self, value: float) -> None:
         """Runtime setter for the full-speed deviation (from the hub number)."""
-        try:
-            value = float(value)
-        except (TypeError, ValueError):
-            return
-        if value <= 0:
+        value = _num(value)
+        if value is None or value <= 0:
             return
         previous = self._fan_full_deviation
         self._fan_full_deviation = value
@@ -222,7 +231,8 @@ class SmarterZonesManager:
 
     async def async_refresh_fan(self) -> None:
         """Re-evaluate just the fan speed (e.g. after a tuning change)."""
-        await self._async_apply_fan()
+        async with self._pass_lock:
+            await self._async_apply_fan()
 
     def set_auto_setpoint(self, enabled: bool) -> None:
         """Runtime toggle for auto target temperature (from the hub switch)."""
@@ -241,11 +251,8 @@ class SmarterZonesManager:
 
     def set_setpoint_max_bias(self, value: float) -> None:
         """Runtime setter for the max setpoint bias (from the hub number)."""
-        try:
-            value = float(value)
-        except (TypeError, ValueError):
-            return
-        if value <= 0:
+        value = _num(value)
+        if value is None or value <= 0:
             return
         previous = self._setpoint_max_bias
         self._setpoint_max_bias = value
@@ -255,7 +262,20 @@ class SmarterZonesManager:
 
     async def async_refresh_setpoint(self) -> None:
         """Re-evaluate just the auto setpoint (e.g. after a tuning change)."""
-        await self._async_apply_setpoint()
+        async with self._pass_lock:
+            await self._async_apply_setpoint()
+
+    async def async_stop_auto_setpoint(self) -> None:
+        """Turn auto setpoint off and put the user's setpoint back."""
+        async with self._pass_lock:
+            self.set_auto_setpoint(False)
+            await self.async_restore_setpoint_base()
+
+    async def async_stop_auto_fan(self) -> None:
+        """Turn auto fan speed off and put the user's fan mode back."""
+        async with self._pass_lock:
+            self.set_auto_fan_speed(False)
+            await self.async_restore_fan_base()
 
     # ----------------------------------------------- base setpoint memory
 
@@ -266,28 +286,19 @@ class SmarterZonesManager:
 
     def set_setpoint_base(self, value: float | None) -> None:
         """Seed the remembered base (e.g. restored from the switch across restarts)."""
-        try:
-            self._setpoint_base = float(value) if value is not None else None
-        except (TypeError, ValueError):
-            self._setpoint_base = None
+        self._setpoint_base = _num(value)
 
     def capture_setpoint_base(self) -> None:
-        """Remember the unit's current target temperature as the user's base level.
+        """Remember the unit's current setpoint as the user's own (the base).
 
-        Called when auto target temperature is switched on, *before* any bias is
-        applied, so the value stored is the user's own setpoint and can be
-        re-instated when the feature is switched off.
+        Called at power-on and when the feature is switched on, before any bias
+        is applied.
         """
         state = self.hass.states.get(self.climate_device)
-        value = state.attributes.get("temperature") if state else None
-        try:
-            value = float(value) if value is not None else None
-        except (TypeError, ValueError):
-            value = None
-        # If the displayed target is still the last bias *we* wrote, the off-state
-        # restore never took on the device (some units ignore writes while off).
-        # Capturing it would corrupt the base a little more every on/off cycle, so
-        # fall back to the base we last tried to restore.
+        value = _num(state.attributes.get("temperature")) if state else None
+        # If the unit still shows the last bias we wrote, our off-state restore
+        # didn't take. Keep the base we tried to restore instead of capturing our
+        # own value (which would drift the base further every on/off cycle).
         if (
             value is not None
             and self._last_commanded_setpoint is not None
@@ -313,19 +324,14 @@ class SmarterZonesManager:
             _LOGGER.debug("Auto target temperature on: no base setpoint to remember")
 
     async def async_restore_setpoint_base(self, clear: bool = True) -> None:
-        """Re-instate the remembered base target temperature, then forget it.
+        """Put the user's setpoint back, then forget it.
 
-        Called when auto-setpoint is switched off and the first time the unit is
-        found off while auto-setpoint stays on. ``clear=True`` (the default) wipes
-        the remembered base afterwards so we don't keep writing to the unit while it
-        stays off - it's re-captured next time the unit is turned on. The base is
-        written even when the unit is off (that's the point - the displayed target
-        returns to the user's level rather than sitting at our bias); only an
-        unreachable (unavailable/unknown) device is skipped.
+        Used when the feature is switched off, and the first time the unit is
+        found off. Writes even while the unit is off (so it shows the user's
+        value, not ours). If the unit is unreachable the base is kept, so a
+        later pass can still restore it.
         """
         value = self._setpoint_base
-        if clear:
-            self._setpoint_base = None
         if value is None:
             _LOGGER.debug("Auto target temperature: no base setpoint to restore")
             return
@@ -333,17 +339,15 @@ class SmarterZonesManager:
         state_l = state.state.lower() if state else None
         if state is None or state_l in ("unavailable", "unknown"):
             _LOGGER.debug(
-                "Auto target temperature: unit %s unreachable; can't restore "
-                "base setpoint %.1f°",
+                "Auto target temperature: unit %s unreachable; keeping base "
+                "setpoint %.1f° to restore later",
                 self.climate_device,
                 value,
             )
             return
-        current = state.attributes.get("temperature")
-        try:
-            current = float(current) if current is not None else None
-        except (TypeError, ValueError):
-            current = None
+        if clear:
+            self._setpoint_base = None
+        current = _num(state.attributes.get("temperature"))
         if current is not None and abs(current - value) < SETPOINT_DEADBAND:
             self._last_restored_base = value
             _LOGGER.debug(
@@ -413,15 +417,12 @@ class SmarterZonesManager:
             _LOGGER.debug("Auto fan speed: no base fan mode to remember")
 
     async def async_restore_fan_base(self, clear: bool = True) -> None:
-        """Re-instate the remembered fan mode, then forget it.
+        """Put the user's fan mode back, then forget it.
 
-        Called the first time the unit is found off. Skips only an unreachable
-        device; the write is attempted while off on purpose, with the delayed
-        verification catching units that ignore it.
+        Mirrors the setpoint restore: writes even while off, and keeps the base
+        if the unit is unreachable so a later pass can still restore it.
         """
         value = self._fan_base
-        if clear:
-            self._fan_base = None
         if not value:
             _LOGGER.debug("Auto fan speed: no base fan mode to restore")
             return
@@ -429,11 +430,14 @@ class SmarterZonesManager:
         state_l = state.state.lower() if state else None
         if state is None or state_l in ("unavailable", "unknown"):
             _LOGGER.debug(
-                "Auto fan speed: unit %s unreachable; can't restore fan mode '%s'",
+                "Auto fan speed: unit %s unreachable; keeping fan mode '%s' to "
+                "restore later",
                 self.climate_device,
                 value,
             )
             return
+        if clear:
+            self._fan_base = None
         self._last_restored_fan = value
         current_fan = state.attributes.get("fan_mode")
         if current_fan == value:
@@ -469,16 +473,19 @@ class SmarterZonesManager:
         )
 
     async def _async_verify_restore(self, _now) -> None:
-        """Confirm the off-state setpoint/fan restores match expectations.
-
-        Runs RESTORE_VERIFY_DELAY seconds after an off-restore. If the device
-        still shows *our own* stale value it re-writes and re-checks (up to
-        RESTORE_VERIFY_ATTEMPTS retries). A value that matches neither the
-        expected base nor our last command means the user changed it while
-        off, so it's left alone. Only acts while the unit is still off - once
-        it's back on, the normal logic owns the device again.
-        """
+        """Timer callback: run the restore check without overlapping a pass."""
         self._restore_verify_unsub = None
+        async with self._pass_lock:
+            await self._async_check_restore()
+
+    async def _async_check_restore(self) -> None:
+        """Check that the off-state setpoint/fan restore actually took.
+
+        If the unit still shows our own old value, write the base again and
+        check once more later (up to RESTORE_VERIFY_ATTEMPTS). Any other value
+        means someone changed it while off, so it's left alone. Does nothing
+        once the unit is back on.
+        """
         state = self.hass.states.get(self.climate_device)
         if state is None or state.state.lower() != "off":
             _LOGGER.debug("Restore check: unit no longer off; nothing to verify")
@@ -487,11 +494,7 @@ class SmarterZonesManager:
 
         expected = self._last_restored_base
         if expected is not None:
-            current = state.attributes.get("temperature")
-            try:
-                current = float(current) if current is not None else None
-            except (TypeError, ValueError):
-                current = None
+            current = _num(state.attributes.get("temperature"))
             mismatch = current is None or abs(current - expected) >= SETPOINT_DEADBAND
             ours = (
                 self._last_commanded_setpoint is None
@@ -647,20 +650,21 @@ class SmarterZonesManager:
 
     @callback
     def set_zone_target(self, zone_id: str, target: float) -> None:
-        self._targets[zone_id] = target
+        if (value := _num(target)) is not None:
+            self._targets[zone_id] = value
 
     def get_zone_target(self, zone_id: str) -> float | None:
         return self._targets.get(zone_id)
 
     def get_zone(self, zone_id: str) -> dict | None:
-        """Return the live config for a zone, or None if it no longer exists."""
-        return next(
-            (z for z in self.zones if z[CONF_ZONE_ID] == zone_id), None
-        )
+        """Return a zone's config, or None if it no longer exists."""
+        return self._zones_by_id.get(zone_id)
 
     @callback
     def set_zone_offset(self, zone_id: str, key: str, value: float) -> None:
-        self._offset_values.setdefault(zone_id, {})[key] = float(value)
+        # Offsets are distances, so never negative (that would invert the band).
+        if (number := _num(value)) is not None:
+            self._offset_values.setdefault(zone_id, {})[key] = max(0.0, number)
 
     def _is_ready(self, zone_id: str) -> bool:
         """A zone is only evaluated once its number and switch have registered.
@@ -676,12 +680,14 @@ class SmarterZonesManager:
 
     @callback
     def unregister_status_listener(self, zone_id: str, update_cb) -> None:
-        if zone_id in self._status_listeners:
-            self._status_listeners[zone_id].remove(update_cb)
+        listeners = self._status_listeners.get(zone_id, [])
+        if update_cb in listeners:
+            listeners.remove(update_cb)
 
     @callback
     def _notify_status(self, zone_id: str) -> None:
-        for cb in self._status_listeners.get(zone_id, []):
+        # Copy: a listener may unregister itself while we're iterating.
+        for cb in list(self._status_listeners.get(zone_id, [])):
             cb()
 
     @callback
@@ -706,16 +712,18 @@ class SmarterZonesManager:
 
     # --------------------------------------------------------------- helpers
 
+    @staticmethod
+    def _to_float(state) -> float | None:
+        """A state object's value as a number, or None if it isn't one."""
+        if state is None or str(state.state).lower() in UNAVAILABLE_STATES:
+            return None
+        return _num(state.state)
+
     def _read_float(self, entity_id: str | None) -> float | None:
+        """An entity's current value as a number, or None if it isn't one."""
         if not entity_id:
             return None
-        state = self.hass.states.get(entity_id)
-        if state is None or state.state.lower() in UNAVAILABLE_STATES:
-            return None
-        try:
-            return float(state.state)
-        except (TypeError, ValueError):
-            return None
+        return self._to_float(self.hass.states.get(entity_id))
 
     def _device_state(self) -> str | None:
         state = self.hass.states.get(self.climate_device)
@@ -738,8 +746,9 @@ class SmarterZonesManager:
         """Live offset value, falling back to the setup value, then default."""
         live = self._offset_values.get(zone[CONF_ZONE_ID], {})
         if key in live:
-            return float(live[key])
-        return float(zone.get(key, DEFAULT_OFFSET))
+            return live[key]
+        configured = _num(zone.get(key))
+        return max(0.0, configured) if configured is not None else DEFAULT_OFFSET
 
     def _offsets(self, zone: dict, device_state: str) -> tuple[float, float]:
         """Return (upper, lower) offset for the active mode.
@@ -838,14 +847,11 @@ class SmarterZonesManager:
             self._cancel_condition_timer(zone_id)
 
     def _effective_conditions_met(self, zone: dict) -> bool:
-        """The debounced condition state the control logic acts on.
+        """The zone's conditions, ignoring brief flaps.
 
-        A raw condition change (e.g. a door sensor flapping open/closed) only
-        takes effect once it has held for CONDITION_DEBOUNCE_SECONDS, so brief
-        flaps move no dampers at all. The first evaluation of a zone adopts the
-        raw state immediately. Entering the pending window schedules a one-shot
-        re-evaluation for when the debounce expires, since the sensor may go
-        quiet and nothing else would re-trigger the decision.
+        A change only counts once it has lasted CONDITION_DEBOUNCE_SECONDS, so a
+        door opened and shut again moves no dampers. A timer re-checks when the
+        wait is up, since a quiet sensor wouldn't trigger anything itself.
         """
         if not zone.get(CONF_CONDITIONS):
             return True
@@ -1075,22 +1081,17 @@ class SmarterZonesManager:
                 self.climate_device,
                 new_s,
             )
-        # (Re)capture the base only on a genuine power-on from *off*, before any
-        # bias is applied. Deliberately NOT on recovery from unavailable/unknown:
-        # mid-operation the displayed target is our bias, not the user's setpoint,
-        # so re-capturing there would overwrite the base stored at start-up with a
-        # biased value. (A plain setpoint change mid-operation is an attribute
-        # change, not a turn-on, so it never re-captures either.)
+        # Remember the user's setpoint/fan only on a real power-on from off. Not
+        # when the unit comes back from "unavailable": mid-run it's showing our
+        # bias, and capturing that would overwrite the user's value.
         came_from_off = old_s in ("off", "none", "") and new_s not in inactive
         if came_from_off and self.auto_setpoint:
             self.capture_setpoint_base()
         if came_from_off and self.auto_fan_speed:
             self.capture_fan_base()
         if turned_on:
-            # The unit is running again: the normal logic owns it, so any
-            # pending off-restore verification is obsolete. Conditions are
-            # honoured as they are right now (no debounce carry-over from
-            # before the off period).
+            # Running again: drop any pending off-restore check, and act on the
+            # conditions as they are now rather than a debounce from before.
             self._cancel_restore_verify()
             self._reset_condition_tracking()
         await self.async_manage_all(turn_on=turned_on)
@@ -1467,13 +1468,10 @@ class SmarterZonesManager:
     # ------------------------------------------------------- setpoint control
 
     def _setpoint_demand(self, direction: str) -> dict:
-        """Worst unmet room demand among open zones, for a cool/heat direction.
+        """How far the neediest open room still is from its target.
 
-        Demand is the *signed* distance a room still has to travel toward its
-        target in the conditioning direction: for cooling, current - target
-        (positive while too warm); for heating, target - current. Only currently
-        open zones contribute; an open zone whose sensor can't be read is flagged
-        so we keep conditioning rather than guess it's satisfied.
+        Positive means it still needs cooling (or heating). An open room with no
+        reading is flagged, so we keep going rather than assume it's fine.
         """
         detail: list[dict] = []
         worst = 0.0
@@ -1509,16 +1507,12 @@ class SmarterZonesManager:
         }
 
     def _setpoint_eval(self) -> dict:
-        """Work out the setpoint the auto-setpoint feature would request.
+        """Work out the setpoint to request, and why.
 
-        Anchors to the unit's *own* current_temperature, because that is the
-        reading the air conditioner compares its setpoint against when deciding
-        whether to run - even when that reading disagrees with the rooms. The
-        room sensors only decide whether to keep biasing and by how much. Only
-        single-setpoint cool/heat modes are handled (heat_cool uses a band and
-        is left alone). The returned dict always carries a ``status`` headline
-        plus the inputs behind it; ``desired_setpoint`` is present only when a
-        value is actually being driven.
+        Anchored to the unit's own temperature reading (what it regulates
+        against); the room sensors decide how hard to push. Only acts in plain
+        cool or heat mode. ``desired_setpoint`` is only present when there's
+        something to set; ``status`` is always present.
         """
         unit = self.hass.config.units.temperature_unit
         out: dict = {
@@ -1550,11 +1544,7 @@ class SmarterZonesManager:
             return out
         out["direction"] = direction
 
-        unit_temp = state.attributes.get("current_temperature")
-        try:
-            unit_temp = float(unit_temp) if unit_temp is not None else None
-        except (TypeError, ValueError):
-            unit_temp = None
+        unit_temp = _num(state.attributes.get("current_temperature"))
         if unit_temp is None:
             out["status"] = "Unavailable"
             out["reason"] = (
@@ -1563,34 +1553,17 @@ class SmarterZonesManager:
             return out
         out["unit_temperature"] = round(unit_temp, 2)
 
-        current_setpoint = state.attributes.get("temperature")
-        try:
-            current_setpoint = (
-                float(current_setpoint) if current_setpoint is not None else None
-            )
-        except (TypeError, ValueError):
-            current_setpoint = None
+        current_setpoint = _num(state.attributes.get("temperature"))
         out["current_setpoint"] = current_setpoint
 
-        # Guardrails come straight from the climate device so we never request a
-        # setpoint it would reject: snap to its target_temp_step and clamp to its
-        # min_temp/max_temp.
-        step = state.attributes.get("target_temp_step") or TARGET_TEMP_STEP
-        try:
-            step = float(step)
-        except (TypeError, ValueError):
-            step = TARGET_TEMP_STEP
-        if step <= 0:
+        # Use the unit's own step and limits so we never ask for a setpoint it
+        # would reject.
+        step = _num(state.attributes.get("target_temp_step"))
+        if step is None or step <= 0:
             step = TARGET_TEMP_STEP
 
-        def _coerce(value):
-            try:
-                return float(value) if value is not None else None
-            except (TypeError, ValueError):
-                return None
-
-        min_t = _coerce(state.attributes.get("min_temp"))
-        max_t = _coerce(state.attributes.get("max_temp"))
+        min_t = _num(state.attributes.get("min_temp"))
+        max_t = _num(state.attributes.get("max_temp"))
         if min_t is not None and max_t is not None and min_t > max_t:
             min_t, max_t = max_t, min_t
         out["device_min_temp"] = min_t
@@ -1793,64 +1766,56 @@ class SmarterZonesManager:
     async def _handle_zone_entity_change(
         self, event: Event[EventStateChangedData]
     ) -> None:
-        entity_id = event.data["entity_id"]
+        entity_id = event.data.get("entity_id")
         new = event.data.get("new_state")
-        affected: list[dict] = []
-        for zone in self.zones:
-            relevant = entity_id == zone[CONF_LOCAL_SENSOR] or entity_id in {
-                c[CONF_CONDITION_ENTITY] for c in zone.get(CONF_CONDITIONS, [])
-            }
-            if relevant:
-                affected.append(zone)
-        if affected:
-            _LOGGER.debug(
-                "%s changed to '%s'; re-evaluating zone(s): %s",
-                entity_id,
-                new.state if new else "unknown",
-                ", ".join(z[CONF_ZONE_NAME] for z in affected),
-            )
-        # One reconciled pass over the affected zones (plus the common zone), so no
-        # damper is commanded more than once. Status is refreshed inside.
-        await self._async_apply_zone_decisions(affected, turn_on=False)
-        await self._async_apply_fan()
-        await self._async_apply_setpoint()
+        affected = self._zones_by_entity.get(entity_id, [])
+        if not affected:
+            return
+        _LOGGER.debug(
+            "%s changed to '%s'; re-evaluating zone(s): %s",
+            entity_id,
+            new.state if new else "unknown",
+            ", ".join(z[CONF_ZONE_NAME] for z in affected),
+        )
+        async with self._pass_lock:
+            await self._async_apply_zone_decisions(affected, turn_on=False)
+            await self._async_apply_fan()
+            await self._async_apply_setpoint()
 
     async def _handle_trigger_change(
         self, event: Event[EventStateChangedData]
     ) -> None:
-        new_state = event.data.get("new_state")
-        if new_state is None:
+        """Power the unit on when the trigger temperature crosses a threshold.
+
+        Only fires on the reading that *crosses* the threshold, and only while
+        the unit is off. So if someone turns the unit off on a hot day, it stays
+        off until the temperature drops back into range and crosses again.
+        """
+        old = self._to_float(event.data.get("old_state"))
+        new = self._to_float(event.data.get("new_state"))
+        if old is None or new is None:
             return
-        # Auto power-ON only: while the unit is already running (or unreachable)
-        # the trigger must stay out of the way. Without this guard every sensor
-        # tick above the threshold would re-issue turn_on/set_hvac_mode, which
-        # overrides a mode the user chose and turns the unit straight back on
-        # after a deliberate power-off.
+        try:
+            high = float(self._conf.get(CONF_TRIGGER_HIGH, DEFAULT_TRIGGER_HIGH))
+            low = float(self._conf.get(CONF_TRIGGER_LOW, DEFAULT_TRIGGER_LOW))
+        except (TypeError, ValueError):
+            _LOGGER.warning("Auto power-on thresholds aren't numbers; ignoring")
+            return
+        if new > high >= old:
+            mode = "cool"
+        elif new < low <= old:
+            mode = "heat"
+        else:
+            return
         device_state = (self._device_state() or "").lower()
         if device_state != "off":
             _LOGGER.debug(
-                "Trigger change ignored: unit is '%s', not off", device_state or "?"
+                "Trigger crossed into %s range but the unit is '%s'; leaving it",
+                mode,
+                device_state or "unknown",
             )
             return
-        try:
-            temp = float(new_state.state)
-        except (TypeError, ValueError):
-            return
-        high = float(self._conf.get(CONF_TRIGGER_HIGH, DEFAULT_TRIGGER_HIGH))
-        low = float(self._conf.get(CONF_TRIGGER_LOW, DEFAULT_TRIGGER_LOW))
-        if temp > high:
-            mode = "cool"
-        elif temp < low:
-            mode = "heat"
-        else:
-            _LOGGER.debug(
-                "Trigger temp %.1f within neutral band [%.1f, %.1f]; no power-on",
-                temp,
-                low,
-                high,
-            )
-            return
-        _LOGGER.info("Trigger temp %s -> powering on in %s mode", temp, mode)
+        _LOGGER.info("Trigger temperature %.1f° -> powering on to %s", new, mode)
         if await self._async_climate_call("turn_on", {}, "auto power-on"):
             await self._async_climate_call(
                 "set_hvac_mode",
@@ -1861,34 +1826,32 @@ class SmarterZonesManager:
     # ----------------------------------------------------------- zone logic
 
     async def async_manage_all(self, turn_on: bool = False) -> None:
-        await self._async_apply_zone_decisions(self.zones, turn_on=turn_on)
-        await self._async_apply_fan()
-        await self._async_apply_setpoint()
-
-    async def async_manage_zone(self, zone: dict, turn_on: bool = False) -> None:
-        """Re-evaluate a single zone (and reconcile the common zone) in one pass.
-
-        Also refreshes the fan speed and setpoint bias, since a zone change
-        (target adjusted, condition debounce expiring) changes the demand they
-        are computed from - but not during platform setup, where the hub
-        switches may not have restored their persisted state yet (the setup
-        pass in async_setup covers that).
-        """
-        await self._async_apply_zone_decisions([zone], turn_on=turn_on)
-        if self._started:
+        """Re-evaluate every zone, then the fan speed and setpoint."""
+        async with self._pass_lock:
+            await self._async_apply_zone_decisions(self.zones, turn_on=turn_on)
             await self._async_apply_fan()
             await self._async_apply_setpoint()
+
+    async def async_manage_zone(self, zone: dict, turn_on: bool = False) -> None:
+        """Re-evaluate one zone (plus the common zone), then fan and setpoint.
+
+        Fan and setpoint are skipped until setup has finished, so they can't act
+        before the hub switches have restored their saved state.
+        """
+        async with self._pass_lock:
+            await self._async_apply_zone_decisions([zone], turn_on=turn_on)
+            if self._started:
+                await self._async_apply_fan()
+                await self._async_apply_setpoint()
 
     async def _async_apply_zone_decisions(
         self, zones: list[dict], turn_on: bool = False
     ) -> None:
-        """Decide every given zone (plus the common zone) once, reconcile, and apply
-        each damper a single time.
+        """Decide all the given zones (and the common zone) first, then apply.
 
-        Keeping the decision (``_decide_zone``/``_decide_common``, pure functions)
-        separate from application means two rules can never command the same switch
-        twice in one pass - which is what caused the open/close bounce on turn-on.
-        ``None`` means "hold as-is" (no command), so hysteresis holds are preserved.
+        Deciding everything before touching anything means each damper gets at
+        most one command per pass, so two rules can't fight over it. A decision
+        of None means "leave it as it is".
         """
         desired: dict[str, tuple[bool, str] | None] = {}
         for zone in zones:
@@ -1959,6 +1922,12 @@ class SmarterZonesManager:
 
         if state_l == "off":
             return (False, "climate device off")
+
+        # Unit unreachable: we don't know what it's doing, so leave the dampers
+        # alone rather than reacting (e.g. fail-safe opening) to a guess.
+        if state_l in ("unavailable", "unknown", "none", ""):
+            _LOGGER.debug("%s: climate device %s; holding", name, state_l or "unknown")
+            return None
 
         if not enabled:
             _LOGGER.debug("%s: smart control off; leaving under manual control", name)
@@ -2040,13 +2009,11 @@ class SmarterZonesManager:
     def _decide_common(
         self, desired: dict[str, tuple[bool, str] | None]
     ) -> tuple[bool, str] | None:
-        """Pure decision for the common (airflow-path) zone.
+        """Decide the common (airflow-path) zone.
 
-        Uses the *post-pass effective* state of the other zones - their decision
-        this pass if they have one, otherwise their live state - so it reacts to
-        what the dampers will be, not what they currently are. Returns
-        ``(open, reason)``, or ``None`` to defer to its own per-zone hysteresis
-        decision / leave it as-is.
+        Looks at what the other dampers *will* be after this pass, not what they
+        are now. Returns (open, reason), or None to let the zone's own
+        temperature rules decide.
         """
         common = self.common_zone_switch
         device_state = self._device_state()

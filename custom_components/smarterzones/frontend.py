@@ -57,8 +57,13 @@ async def _async_loaded(resources: Any) -> Any:
     return resources
 
 
-def _ours(item: dict, path: str) -> bool:
-    return str(item.get("url", "")).split("?", 1)[0] == path
+def _ours(item: Any, path: str) -> bool:
+    """True for a resource entry that loads our card (any version)."""
+    return (
+        isinstance(item, dict)
+        and item.get("id") is not None
+        and str(item.get("url", "")).split("?", 1)[0] == path
+    )
 
 
 async def async_register_card_resource(

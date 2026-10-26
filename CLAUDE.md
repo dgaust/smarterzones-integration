@@ -10,9 +10,9 @@ to drive each zone. It started life as the `smarterzones` AppDaemon app and was
 rebuilt into a full UI-configurable integration (hub device + per-zone
 sub-devices, config flow, no helper entities).
 
-- Integration version: see `custom_components/smarterzones/manifest.json` (`2.9.0`).
+- Integration version: see `custom_components/smarterzones/manifest.json` (`2.10.0`).
 - Card version: see `CARD_VERSION` in
-  `custom_components/smarterzones/www/smarterzones-zone-card.js` (`1.19.0`)
+  `custom_components/smarterzones/www/smarterzones-zone-card.js` (`1.19.1`)
   — **also mirrored as `CARD_VERSION` in `const.py`**, which cache-busts the
   dashboard-resource `?v=` URL. Bump both together or browsers keep the stale card.
 - Bump both when you change the respective part (see Conventions).
@@ -107,11 +107,33 @@ README.md                            user-facing docs
   only once `_started` is set at the end of `async_setup`, so per-entity evaluations
   during platform setup can't bias the unit before the hub switches have restored
   their persisted base values.
-- **Auto power-on trigger** (`_handle_trigger_change`): only acts while the unit is
-  **off** — without that guard every trigger-sensor tick above/below the thresholds
-  would re-issue turn_on/set_hvac_mode, overriding a user's mode choice and turning
-  the unit straight back on after a deliberate power-off. Writes go through
+- **Auto power-on trigger** (`_handle_trigger_change`): **edge-triggered** — fires
+  only on the reading that *crosses* a threshold (old and new both numeric, old on
+  the near side), and only while the unit is off. So a unit switched off on a hot
+  day stays off until the temperature drops back and crosses again (a level
+  trigger re-powered it on the next sensor tick). Writes go through
   `_async_climate_call` (retried); the mode is only set after turn_on succeeds.
+- **One pass at a time**: `_pass_lock` (an `asyncio.Lock`) wraps every entry
+  point that runs a control pass — `async_manage_all`, `async_manage_zone`,
+  `_handle_zone_entity_change`, `async_refresh_fan`/`_setpoint`,
+  `async_stop_auto_fan`/`_setpoint`, and the restore-check timer. Passes await
+  service calls, so without it two events arriving together interleaved and could
+  command the same damper twice. The lock isn't re-entrant: the `_async_apply_*`
+  internals and the restore methods must **not** take it (they run inside it).
+- **Unit unreachable → hold**: `_decide_zone` returns None while the climate
+  entity is unavailable/unknown, *before* the sensor fail-safe — otherwise a
+  Wi-Fi drop plus an unreadable room sensor opened dampers on a unit we can't see.
+- **Numbers**: every reading goes through `_num()` (finite float or None — rejects
+  text, `nan`, `inf`). Offsets are clamped ≥ 0 (a negative offset inverts the band).
+  The base setpoint/fan restores only forget the base once the unit is reachable,
+  so an unavailable unit doesn't lose the user's value.
+- **Config is cached** in `__init__` (`self._conf`, plus `_zones_by_id` and
+  `_zones_by_entity`): saving options reloads the entry and builds a new manager,
+  so it can't change underneath a running one.
+- **Config flow** rejects a zone switch already used by another zone
+  (`_switch_in_use`) — two zones on one damper would get conflicting decisions.
+- Turning **Auto fan speed** off now puts the user's fan mode back
+  (`async_stop_auto_fan`), matching Auto target temperature.
 - **Projected status** sensor uses "would-be-open-if-turned-on" semantics, so it
   can differ from the live (hysteresis-held) state — that's expected.
 - **Auto fan speed**: demand = worst open-zone |current−target| ÷
@@ -308,7 +330,12 @@ node --check custom_components/smarterzones/www/smarterzones-zone-card.js
 
 # Dashboard-resource registration (no HA needed)
 python3 tests/test_frontend.py
+
+# Control logic + config-flow checks (no HA needed; stubs are built inline)
+python3 tests/test_coordinator.py
 ```
+
+On Windows there's no Python on PATH; run these in WSL (`wsl -d Ubuntu`).
 
 A heavier **stub-import harness** was used during development to import the modules
 without HA: copy `custom_components/smarterzones` next to a folder of stub HA
@@ -337,8 +364,6 @@ zip -r smarterzones_package.zip custom_components brand README.md -x '*__pycache
 
 ## Suggested next steps / open ideas
 
-- Extend `tests/` (so far `test_frontend.py`, the dashboard-resource logic) with
-  the fake-`self` unit tests for the fan logic and turn-on detection, and run
-  them in CI.
-- Consider a HACS release (`hacs.json` is included; verify the structure).
+- Run `tests/` in CI (`test_frontend.py` and `test_coordinator.py` need only
+  plain Python).
 - Optional: an integration-level diagnostics dump for support.

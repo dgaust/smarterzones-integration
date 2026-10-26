@@ -60,6 +60,14 @@ FAN_DEVIATION_MAX = 10.0
 FAN_DEVIATION_STEP = 0.5
 
 
+def _initial(value, default: float) -> float:
+    """A configured starting value as a number, or the default if it's unusable."""
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return float(default)
+
+
 async def async_setup_entry(
     hass: HomeAssistant,
     entry: SmarterZonesConfigEntry,
@@ -97,8 +105,8 @@ class ZoneTargetNumber(SmarterZonesZoneEntity, RestoreNumber):
 
     def __init__(self, manager, entry_id: str, zone: dict) -> None:
         super().__init__(manager, entry_id, zone, "target_temperature")
-        self._attr_native_value = float(
-            zone.get(CONF_TARGET_INIT, DEFAULT_TARGET_TEMP)
+        self._attr_native_value = _initial(
+            zone.get(CONF_TARGET_INIT), DEFAULT_TARGET_TEMP
         )
 
     async def async_added_to_hass(self) -> None:
@@ -112,7 +120,7 @@ class ZoneTargetNumber(SmarterZonesZoneEntity, RestoreNumber):
 
     async def async_set_native_value(self, value: float) -> None:
         _LOGGER.info(
-            "Target temperature for zone '%s' set to %.1f", self._attr_name, value
+            "Target temperature for zone '%s' set to %.1f", self._zone_name, value
         )
         self._attr_native_value = value
         self._manager.set_zone_target(self._zone_id, value)
@@ -138,7 +146,7 @@ class ZoneOffsetNumber(SmarterZonesZoneEntity, RestoreNumber):
         self._key = key
         self._attr_name = label
         self._attr_icon = icon
-        self._attr_native_value = float(zone.get(key, DEFAULT_OFFSET))
+        self._attr_native_value = _initial(zone.get(key), DEFAULT_OFFSET)
 
     async def async_added_to_hass(self) -> None:
         await super().async_added_to_hass()
@@ -151,10 +159,7 @@ class ZoneOffsetNumber(SmarterZonesZoneEntity, RestoreNumber):
 
     async def async_set_native_value(self, value: float) -> None:
         _LOGGER.debug(
-            "Offset '%s' for zone '%s' set to %.2f",
-            self._attr_name,
-            self._zone_id,
-            value,
+            "%s for zone '%s' set to %.2f", self._attr_name, self._zone_name, value
         )
         self._attr_native_value = value
         self._manager.set_zone_offset(self._zone_id, self._key, value)

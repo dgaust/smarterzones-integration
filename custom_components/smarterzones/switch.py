@@ -67,7 +67,7 @@ class SmartControlSwitch(SmarterZonesZoneEntity, SwitchEntity, RestoreEntity):
             await self._manager.async_manage_zone(zone)
 
     async def async_turn_on(self, **kwargs) -> None:
-        _LOGGER.info("Smart control enabled for zone '%s'", self._attr_name)
+        _LOGGER.info("Smart control enabled for zone '%s'", self._zone_name)
         self._attr_is_on = True
         self._manager.set_zone_enabled(self._zone_id, True)
         self.async_write_ha_state()
@@ -76,7 +76,7 @@ class SmartControlSwitch(SmarterZonesZoneEntity, SwitchEntity, RestoreEntity):
 
     async def async_turn_off(self, **kwargs) -> None:
         _LOGGER.info(
-            "Smart control disabled for zone '%s' (now manual)", self._attr_name
+            "Smart control disabled for zone '%s' (now manual)", self._zone_name
         )
         self._attr_is_on = False
         self._manager.set_zone_enabled(self._zone_id, False)
@@ -121,11 +121,11 @@ class OpenZoneSwitch(SmarterZonesZoneEntity, SwitchEntity):
         self._attr_available = state is not None
 
     async def async_turn_on(self, **kwargs) -> None:
-        _LOGGER.info("Manual open requested for zone '%s'", self._zone_id)
+        _LOGGER.info("Manual open requested for zone '%s'", self._zone_name)
         await self._manager.async_set_zone_damper(self._damper, True)
 
     async def async_turn_off(self, **kwargs) -> None:
-        _LOGGER.info("Manual close requested for zone '%s'", self._zone_id)
+        _LOGGER.info("Manual close requested for zone '%s'", self._zone_name)
         await self._manager.async_set_zone_damper(self._damper, False)
 
 
@@ -176,7 +176,8 @@ class AutoFanSpeedSwitch(SwitchEntity, RestoreEntity):
 
     async def async_turn_off(self, **kwargs) -> None:
         self._attr_is_on = False
-        self._manager.set_auto_fan_speed(False)
+        # Put the fan back to the user's own mode, like the setpoint switch does.
+        await self._manager.async_stop_auto_fan()
         self.async_write_ha_state()
 
 
@@ -235,7 +236,6 @@ class AutoSetpointSwitch(SwitchEntity, RestoreEntity):
 
     async def async_turn_off(self, **kwargs) -> None:
         self._attr_is_on = False
-        self._manager.set_auto_setpoint(False)
-        # Put the unit's setpoint back to the remembered base level.
-        await self._manager.async_restore_setpoint_base()
+        # Put the unit's setpoint back to the user's own value.
+        await self._manager.async_stop_auto_setpoint()
         self.async_write_ha_state()

@@ -54,3 +54,9 @@ class SmarterZonesZoneEntity(Entity):
     def _zone(self) -> dict | None:
         """Return the live zone config (may be None if it was removed)."""
         return self._manager.get_zone(self._zone_id)
+
+    @property
+    def _zone_name(self) -> str:
+        """The zone's name, for log messages."""
+        zone = self._zone
+        return zone.get(CONF_ZONE_NAME, self._zone_id) if zone else self._zone_id

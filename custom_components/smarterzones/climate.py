@@ -185,7 +185,7 @@ class SmarterZonesClimate(ClimateEntity):
         raw = self._attr_value(ATTR_SUPPORTED_FEATURES) or 0
         try:
             features = ClimateEntityFeature(int(raw))
-        except ValueError:
+        except (TypeError, ValueError):
             features = ClimateEntityFeature(0)
         # Always allow turning the unit on/off from this entity.
         return features | ClimateEntityFeature.TURN_ON | ClimateEntityFeature.TURN_OFF

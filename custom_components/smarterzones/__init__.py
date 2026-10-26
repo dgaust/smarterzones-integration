@@ -86,7 +86,8 @@ async def async_unload_entry(
 ) -> bool:
     """Unload a config entry."""
     _LOGGER.info("Unloading SmarterZones config entry '%s'", entry.title)
-    if (manager := entry.runtime_data) is not None:
+    # runtime_data is missing if setup failed before the manager was created.
+    if (manager := getattr(entry, "runtime_data", None)) is not None:
         manager.async_unload()
     return await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
 
@@ -124,5 +125,14 @@ async def async_remove_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
     others = [
         e for e in hass.config_entries.async_entries(DOMAIN) if e.entry_id != entry.entry_id
     ]
-    if not others:
+    if others:
+        return
+    try:
         await async_remove_card_resource(hass, CARD_PATH)
+    except Exception:  # noqa: BLE001 - never block removing the integration
+        _LOGGER.warning(
+            "Could not remove the SmarterZones card's dashboard resource; "
+            "delete %s under Settings > Dashboards > Resources",
+            CARD_PATH,
+            exc_info=True,
+        )

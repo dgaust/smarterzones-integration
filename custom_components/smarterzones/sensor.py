@@ -7,6 +7,8 @@
 
 from __future__ import annotations
 
+import math
+
 from homeassistant.components.sensor import (
     SensorDeviceClass,
     SensorEntity,
@@ -93,6 +95,8 @@ class _MirrorSensor(SmarterZonesZoneEntity, SensorEntity):
                     unit = st.attributes.get("unit_of_measurement")
                 except (ValueError, TypeError):
                     value = None
+                if value is not None and not math.isfinite(value):
+                    value = None  # "nan"/"inf" aren't readings
         self._attr_native_value = value
         if unit:
             self._attr_native_unit_of_measurement = unit

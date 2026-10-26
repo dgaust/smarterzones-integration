@@ -245,6 +245,19 @@ def _apply_zone_edit(
     return updated
 
 
+def _switch_in_use(
+    switch: str, zones: list[dict[str, Any]], exclude_id: str | None = None
+) -> bool:
+    """True if another zone already uses this damper switch.
+
+    Two zones on one switch would give it two conflicting decisions per pass.
+    """
+    return any(
+        z.get(CONF_ZONE_SWITCH) == switch and z.get(CONF_ZONE_ID) != exclude_id
+        for z in zones
+    )
+
+
 def _add_condition(zone: dict[str, Any], user_input: dict[str, Any]) -> None:
     zone[CONF_CONDITIONS].append(
         {
@@ -288,14 +301,24 @@ class SmarterZonesConfigFlow(ConfigFlow, domain=DOMAIN):
     async def async_step_zone(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
+        errors: dict[str, str] = {}
         if user_input is not None:
-            add_conditions = user_input.pop("add_conditions", False)
-            self._current_zone = _build_zone(user_input)
-            if add_conditions:
-                return await self.async_step_condition()
-            self._zones.append(self._current_zone)
-            return await self.async_step_zone_menu()
-        return self.async_show_form(step_id="zone", data_schema=_zone_schema())
+            if _switch_in_use(user_input[CONF_ZONE_SWITCH], self._zones):
+                errors[CONF_ZONE_SWITCH] = "switch_in_use"
+            else:
+                add_conditions = user_input.pop("add_conditions", False)
+                self._current_zone = _build_zone(user_input)
+                if add_conditions:
+                    return await self.async_step_condition()
+                self._zones.append(self._current_zone)
+                return await self.async_step_zone_menu()
+        return self.async_show_form(
+            step_id="zone",
+            data_schema=self.add_suggested_values_to_schema(
+                _zone_schema(), user_input or {}
+            ),
+            errors=errors,
+        )
 
     async def async_step_condition(
         self, user_input: dict[str, Any] | None = None
@@ -384,13 +407,23 @@ class SmarterZonesOptionsFlow(OptionsFlow):
     async def async_step_add_zone(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
+        errors: dict[str, str] = {}
         if user_input is not None:
-            add_conditions = user_input.pop("add_conditions", False)
-            self._current_zone = _build_zone(user_input)
-            if add_conditions:
-                return await self.async_step_add_condition()
-            return self._append_zone()
-        return self.async_show_form(step_id="add_zone", data_schema=_zone_schema())
+            if _switch_in_use(user_input[CONF_ZONE_SWITCH], self._zones):
+                errors[CONF_ZONE_SWITCH] = "switch_in_use"
+            else:
+                add_conditions = user_input.pop("add_conditions", False)
+                self._current_zone = _build_zone(user_input)
+                if add_conditions:
+                    return await self.async_step_add_condition()
+                return self._append_zone()
+        return self.async_show_form(
+            step_id="add_zone",
+            data_schema=self.add_suggested_values_to_schema(
+                _zone_schema(), user_input or {}
+            ),
+            errors=errors,
+        )
 
     async def async_step_add_condition(
         self, user_input: dict[str, Any] | None = None
@@ -444,18 +477,27 @@ class SmarterZonesOptionsFlow(OptionsFlow):
         )
         if zone is None:
             return self.async_abort(reason="no_zones")
+        errors: dict[str, str] = {}
         if user_input is not None:
-            redefine = user_input.pop("redefine_conditions", False)
-            # Keep existing conditions unless the user chose to redefine them.
-            self._current_zone = _apply_zone_edit(zone, user_input)
-            if redefine:
-                self._new_conditions = []
-                return await self.async_step_edit_condition()
-            return self._replace_zone(self._current_zone)
+            if _switch_in_use(
+                user_input[CONF_ZONE_SWITCH], self._zones, exclude_id=zone[CONF_ZONE_ID]
+            ):
+                errors[CONF_ZONE_SWITCH] = "switch_in_use"
+            else:
+                redefine = user_input.pop("redefine_conditions", False)
+                # Keep existing conditions unless the user chose to redefine them.
+                self._current_zone = _apply_zone_edit(zone, user_input)
+                if redefine:
+                    self._new_conditions = []
+                    return await self.async_step_edit_condition()
+                return self._replace_zone(self._current_zone)
         existing = len(zone.get(CONF_CONDITIONS, []))
         return self.async_show_form(
             step_id="edit_zone_details",
-            data_schema=_edit_zone_schema(zone),
+            data_schema=self.add_suggested_values_to_schema(
+                _edit_zone_schema(zone), user_input or {}
+            ),
+            errors=errors,
             description_placeholders={
                 "name": zone[CONF_ZONE_NAME],
                 "conditions": str(existing),

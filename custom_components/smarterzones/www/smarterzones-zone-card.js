@@ -9,7 +9,12 @@
  * versions without a build step.
  */
 
-const CARD_VERSION = "1.19.0";
+const CARD_VERSION = "1.19.1";
+
+// Escape text before it goes into innerHTML (names and messages can contain <, &).
+const esc = (s) =>
+  String(s == null ? "" : s).replace(/[&<>"']/g, (ch) =>
+    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[ch]));
 
 function fireEvent(node, type, detail) {
   const event = new Event(type, { bubbles: true, composed: true, cancelable: false });
@@ -164,11 +169,9 @@ class SmarterZonesZoneCard extends HTMLElement {
     this.shadowRoot.innerHTML =
       `<style>${this._styles()}</style>` +
       `<ha-card><div class="empty"><ha-icon icon="mdi:alert-circle-outline"></ha-icon>` +
-      `<div>Zone card error: ${msg}</div></div></ha-card>`;
-    // The error card replaced the DOM, so the cached build signature no longer
-    // describes what's on screen. Clearing it forces a full rebuild on the next
-    // update - otherwise a single transient failure would leave the error card
-    // showing forever, since _update() would just query a DOM that isn't there.
+      `<div>Zone card error: ${esc(msg)}</div></div></ha-card>`;
+    // The error replaced the card, so force a full rebuild next time - otherwise
+    // the error would stay on screen even after things recover.
     this._sig = null;
     reportError("smarterzones-zone-card", err);
   }
@@ -281,15 +284,17 @@ class SmarterZonesZoneCard extends HTMLElement {
   }
 
   _stepNumber(entityId, dir) {
+    if (!entityId || !this._hass) return;
     const st = this._hass.states[entityId];
-    if (!st) return;
+    if (!st || st.state === "unavailable" || st.state === "unknown") return;
     const a = st.attributes || {};
-    const step = Number(a.step) || 0.5;
-    const min = a.min !== undefined ? Number(a.min) : -Infinity;
-    const max = a.max !== undefined ? Number(a.max) : Infinity;
-    let v = Number(st.state);
-    if (isNaN(v)) v = 0;
-    v = Math.round((v + dir * step) / step) * step;
+    const step = Number(a.step) > 0 ? Number(a.step) : 0.5;
+    const min = Number.isFinite(Number(a.min)) ? Number(a.min) : -Infinity;
+    const max = Number.isFinite(Number(a.max)) ? Number(a.max) : Infinity;
+    // Don't step from a value we can't read (it would jump to the minimum).
+    const current = Number(st.state);
+    if (!Number.isFinite(current)) return;
+    let v = Math.round((current + dir * step) / step) * step;
     v = Math.min(max, Math.max(min, v));
     this._setNumber(entityId, Number(v.toFixed(2)));
   }
@@ -325,7 +330,7 @@ class SmarterZonesZoneCard extends HTMLElement {
       <div class="backdrop" id="backdrop">
         <div class="modal" role="dialog" aria-modal="true">
           <div class="m-head">
-            <span class="m-title" data-d="name">${this._config.name || this._deviceName}</span>
+            <span class="m-title" data-d="name">${esc(this._config.name || this._deviceName)}</span>
             <button class="m-close" id="close" aria-label="Close">✕</button>
           </div>
           <div class="m-body">
@@ -390,9 +395,6 @@ class SmarterZonesZoneCard extends HTMLElement {
       if (isNaN(v)) return st.state;
       return `${v.toFixed(fixed)}${suffix || ""}`;
     };
-
-    const esc = (s) => String(s).replace(/[&<>"]/g, (ch) =>
-      ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[ch]));
 
     set("name", this._config.name || this._deviceName);
 
@@ -537,7 +539,7 @@ class SmarterZonesZoneCard extends HTMLElement {
       <style>${this._styles()}</style>
       <ha-card>
         <div class="header">
-          <div class="title" data-name>${this._deviceName}</div>
+          <div class="title" data-name>${esc(this._deviceName)}</div>
           <div class="head-right">
             ${showHeadTemp ? `
             <button class="head-temp" data-temp-mi aria-label="Current temperature" title="Current temperature">
