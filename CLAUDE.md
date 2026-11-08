@@ -10,7 +10,7 @@ to drive each zone. It started life as the `smarterzones` AppDaemon app and was
 rebuilt into a full UI-configurable integration (hub device + per-zone
 sub-devices, config flow, no helper entities).
 
-- Integration version: see `custom_components/smarterzones/manifest.json` (`2.10.0`).
+- Integration version: see `custom_components/smarterzones/manifest.json` (`2.11.0`).
 - Card version: see `CARD_VERSION` in
   `custom_components/smarterzones/www/smarterzones-zone-card.js` (`1.19.1`)
   — **also mirrored as `CARD_VERSION` in `const.py`**, which cache-busts the
@@ -134,6 +134,22 @@ README.md                            user-facing docs
   (`_switch_in_use`) — two zones on one damper would get conflicting decisions.
 - Turning **Auto fan speed** off now puts the user's fan mode back
   (`async_stop_auto_fan`), matching Auto target temperature.
+- **Predictive control (experimental)**, hub switch "Predictive control
+  (experimental)" (`PredictiveControlSwitch`, RestoreEntity, default **off**,
+  `manager.set_predictive`). Room readings are always recorded
+  (`_record_temperature`, from `_handle_zone_entity_change` and seeded in
+  `async_setup`) into a per-zone `deque`; `_temperature_rate` fits a straight
+  line through the last `PREDICT_WINDOW_SECONDS` (adding the last value at
+  "now", since sensors only report on change) and needs `PREDICT_MIN_SPAN_SECONDS`
+  of history, capped at ±`PREDICT_MAX_RATE` °/min. In `_decide_zone`, *after* the
+  normal open/close edges and *before* the turn-on rule, `_predicted_overshoot`
+  closes an **open** damper early when the room is moving towards the close edge
+  fast enough to pass it within `PREDICT_LEAD_SECONDS` (cooling: falling past
+  `min`; heating: rising past `max`). It only ever closes early — never opens
+  early — and the band's hysteresis then holds it closed. heat_cool and the
+  common zone's airflow rule are untouched. `zone_trend` puts `trend_per_hour` /
+  `predicted_temperature` / `look_ahead_minutes` on the Projected status sensor.
+  History is in memory only (rebuilt within minutes after a reload).
 - **Projected status** sensor uses "would-be-open-if-turned-on" semantics, so it
   can differ from the live (hysteresis-held) state — that's expected.
 - **Auto fan speed**: demand = worst open-zone |current−target| ÷

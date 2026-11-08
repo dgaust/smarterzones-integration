@@ -13,6 +13,7 @@ import logging
 import math
 import re
 import time
+from collections import deque
 from enum import Enum
 
 from homeassistant.config_entries import ConfigEntry
@@ -54,6 +55,11 @@ from .const import (
     FAN_FULL_DEVIATION,
     FAN_MAX_ZONE_BUMP,
     FAN_PER_ZONE_BUMP,
+    PREDICT_HISTORY,
+    PREDICT_LEAD_SECONDS,
+    PREDICT_MAX_RATE,
+    PREDICT_MIN_SPAN_SECONDS,
+    PREDICT_WINDOW_SECONDS,
     RESTORE_VERIFY_ATTEMPTS,
     RESTORE_VERIFY_DELAY,
     SETPOINT_DEADBAND,
@@ -145,6 +151,11 @@ class SmarterZonesManager:
         self._cond_effective: dict[str, bool] = {}
         self._cond_pending: dict[str, tuple[bool, float]] = {}
         self._cond_timers: dict[str, object] = {}
+
+        # Predictive control (experimental): set by the hub switch. Readings
+        # are always recorded, so turning it on can act straight away.
+        self._predictive = False
+        self._temp_history: dict[str, deque] = {}
         # Set at the end of async_setup. Until then, entity registrations only
         # evaluate dampers, so nothing touches the unit before the hub switches
         # have restored their saved state.
@@ -264,6 +275,19 @@ class SmarterZonesManager:
         """Re-evaluate just the auto setpoint (e.g. after a tuning change)."""
         async with self._pass_lock:
             await self._async_apply_setpoint()
+
+    @property
+    def predictive(self) -> bool:
+        """True when experimental predictive control is switched on."""
+        return self._predictive
+
+    def set_predictive(self, enabled: bool) -> None:
+        """Runtime toggle for predictive control (from the hub switch)."""
+        if enabled != self._predictive:
+            _LOGGER.info(
+                "Predictive control %s", "enabled" if enabled else "disabled"
+            )
+        self._predictive = bool(enabled)
 
     async def async_stop_auto_setpoint(self) -> None:
         """Turn auto setpoint off and put the user's setpoint back."""
@@ -620,6 +644,12 @@ class SmarterZonesManager:
                 )
             )
 
+        # Start each room's history with its current reading.
+        for zone in self.zones:
+            self._record_temperature(
+                zone[CONF_ZONE_ID], self._read_float(zone[CONF_LOCAL_SENSOR])
+            )
+
         # If the unit is already running when we set up (e.g. after a HA
         # restart), treat it like a turn-on so in-band zones open.
         device_state = self._device_state()
@@ -904,6 +934,81 @@ class SmarterZonesManager:
             )
             return raw
         return effective
+
+    # ------------------------------------------- predictive control (experimental)
+
+    def _record_temperature(self, zone_id: str, value: float | None) -> None:
+        """Add a room reading to the zone's history (ignored if unreadable)."""
+        if value is None:
+            return
+        history = self._temp_history.setdefault(zone_id, deque(maxlen=PREDICT_HISTORY))
+        history.append((time.monotonic(), value))
+
+    def _temperature_rate(self, zone_id: str) -> float | None:
+        """How fast the room is changing, in degrees per minute.
+
+        A straight-line fit through the last PREDICT_WINDOW_SECONDS of readings.
+        None until there's enough recent history to trust it.
+        """
+        history = self._temp_history.get(zone_id)
+        if not history:
+            return None
+        now = time.monotonic()
+        points = [(t, v) for t, v in history if t >= now - PREDICT_WINDOW_SECONDS]
+        if len(points) < 2:
+            return None
+        # Sensors only report when the value changes, so the last reading still
+        # holds now. Including it stops a quiet sensor looking like it's moving.
+        points.append((now, history[-1][1]))
+        if points[-1][0] - points[0][0] < PREDICT_MIN_SPAN_SECONDS:
+            return None
+        mean_t = sum(t for t, _ in points) / len(points)
+        mean_v = sum(v for _, v in points) / len(points)
+        spread = sum((t - mean_t) ** 2 for t, _ in points)
+        if spread <= 0:
+            return None
+        per_second = sum((t - mean_t) * (v - mean_v) for t, v in points) / spread
+        rate = per_second * 60
+        return max(-PREDICT_MAX_RATE, min(PREDICT_MAX_RATE, rate))
+
+    def _predicted_overshoot(
+        self, zone: dict, current: float, edge: float, falling: bool
+    ) -> str | None:
+        """Reason to close an open zone early, or None.
+
+        Only while predictive control is on, the damper is open, and the room is
+        moving towards ``edge`` fast enough to pass it within the look-ahead.
+        """
+        if not self._predictive:
+            return None
+        damper = self.hass.states.get(zone[CONF_ZONE_SWITCH])
+        if damper is None or damper.state != "on":
+            return None
+        rate = self._temperature_rate(zone[CONF_ZONE_ID])
+        if rate is None or (rate >= 0 if falling else rate <= 0):
+            return None
+        projected = current + rate * PREDICT_LEAD_SECONDS / 60
+        if (projected > edge) if falling else (projected < edge):
+            return None
+        return (
+            f"predicted to reach {projected:.2f} within "
+            f"{PREDICT_LEAD_SECONDS // 60} min ({rate * 60:+.1f}°/h); "
+            "closing early to avoid overshoot"
+        )
+
+    def zone_trend(self, zone: dict) -> dict:
+        """What the predictor sees for a zone (for the Projected status sensor)."""
+        rate = self._temperature_rate(zone[CONF_ZONE_ID])
+        if rate is None:
+            return {}
+        out = {"trend_per_hour": round(rate * 60, 2)}
+        current = self._read_float(zone[CONF_LOCAL_SENSOR])
+        if current is not None:
+            out["predicted_temperature"] = round(
+                current + rate * PREDICT_LEAD_SECONDS / 60, 2
+            )
+            out["look_ahead_minutes"] = PREDICT_LEAD_SECONDS // 60
+        return out
 
     def projected_status(self, zone: dict) -> str | None:
         """What the zone's open/closed state would be if the unit were running.
@@ -1771,6 +1876,10 @@ class SmarterZonesManager:
         affected = self._zones_by_entity.get(entity_id, [])
         if not affected:
             return
+        reading = self._to_float(new)
+        for zone in affected:
+            if zone[CONF_LOCAL_SENSOR] == entity_id:
+                self._record_temperature(zone[CONF_ZONE_ID], reading)
         _LOGGER.debug(
             "%s changed to '%s'; re-evaluating zone(s): %s",
             entity_id,
@@ -1975,6 +2084,8 @@ class SmarterZonesManager:
                 return (True, f"cooling: {current:.2f} >= max {max_temp:.2f} (too warm)")
             if current <= min_temp:
                 return (False, f"cooling: {current:.2f} <= min {min_temp:.2f} (cool enough)")
+            if early := self._predicted_overshoot(zone, current, min_temp, falling=True):
+                return (False, f"cooling: {early}")
             if turn_on:
                 return (True, "cooling: turn-on, room within band")
             _LOGGER.debug(
@@ -1987,6 +2098,8 @@ class SmarterZonesManager:
                 return (True, f"heating: {current:.2f} <= min {min_temp:.2f} (too cold)")
             if current >= max_temp:
                 return (False, f"heating: {current:.2f} >= max {max_temp:.2f} (warm enough)")
+            if early := self._predicted_overshoot(zone, current, max_temp, falling=False):
+                return (False, f"heating: {early}")
             if turn_on:
                 return (True, "heating: turn-on, room within band")
             _LOGGER.debug(

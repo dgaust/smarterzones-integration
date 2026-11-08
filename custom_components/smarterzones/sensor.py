@@ -168,6 +168,10 @@ class ProjectedStatusSensor(_ZoneStatusSensor):
         self._attr_native_value = (
             self._manager.projected_status(zone) if zone is not None else None
         )
+        # The room's trend and where it's heading, as used by predictive control.
+        self._attr_extra_state_attributes = (
+            self._manager.zone_trend(zone) if zone is not None else {}
+        )
 
 
 class _RangeSensor(_ZoneStatusSensor):

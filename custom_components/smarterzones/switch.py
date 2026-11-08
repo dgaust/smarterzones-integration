@@ -42,6 +42,7 @@ async def async_setup_entry(
     # Auto target temperature is always available to enable from the hub device,
     # mirroring the auto-fan-speed switch; the config option only sets the default.
     entities.append(AutoSetpointSwitch(manager, entry.entry_id, entry.title))
+    entities.append(PredictiveControlSwitch(manager, entry.entry_id, entry.title))
     async_add_entities(entities)
 
 
@@ -238,4 +239,42 @@ class AutoSetpointSwitch(SwitchEntity, RestoreEntity):
         self._attr_is_on = False
         # Put the unit's setpoint back to the user's own value.
         await self._manager.async_stop_auto_setpoint()
+        self.async_write_ha_state()
+
+
+class PredictiveControlSwitch(SwitchEntity, RestoreEntity):
+    """Hub toggle for experimental predictive control (off by default).
+
+    When on, a zone's damper closes early if the room is changing fast enough
+    to overshoot its band before the damper would normally close.
+    """
+
+    _attr_has_entity_name = True
+    _attr_should_poll = False
+    _attr_name = "Predictive control (experimental)"
+    _attr_icon = "mdi:crystal-ball"
+    _attr_entity_category = EntityCategory.CONFIG
+
+    def __init__(self, manager, entry_id: str, title: str) -> None:
+        self._manager = manager
+        self._attr_unique_id = f"{entry_id}_predictive_control"
+        self._attr_device_info = hub_device_info(entry_id, title)
+        self._attr_is_on = False
+
+    async def async_added_to_hass(self) -> None:
+        await super().async_added_to_hass()
+        if (last := await self.async_get_last_state()) is not None:
+            self._attr_is_on = last.state == "on"
+        self._manager.set_predictive(self._attr_is_on)
+
+    async def async_turn_on(self, **kwargs) -> None:
+        self._attr_is_on = True
+        self._manager.set_predictive(True)
+        self.async_write_ha_state()
+        await self._manager.async_manage_all()
+
+    async def async_turn_off(self, **kwargs) -> None:
+        # Nothing to undo: dampers simply go back to the normal rules.
+        self._attr_is_on = False
+        self._manager.set_predictive(False)
         self.async_write_ha_state()

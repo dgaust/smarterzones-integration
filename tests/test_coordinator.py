@@ -14,6 +14,7 @@ import pathlib
 import sys
 import time
 import types
+from collections import deque
 from enum import Enum
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
@@ -158,7 +159,8 @@ METHODS = [
     "async_manage_all", "async_manage_zone", "_async_apply_zone_decisions",
     "_async_set_switch", "_notify_status", "set_zone_offset", "set_zone_target",
     "async_stop_auto_fan", "async_stop_auto_setpoint", "set_auto_fan_speed",
-    "set_auto_setpoint",
+    "set_auto_setpoint", "set_predictive", "_record_temperature",
+    "_temperature_rate", "_predicted_overshoot", "zone_trend",
 ]
 
 
@@ -197,6 +199,8 @@ def manager(states, zones=(), targets=None, base=None, common=None, conf=None):
     f._restore_verify_unsub = None
     f._restore_verify_attempts = 0
     f._cond_effective, f._cond_pending, f._cond_timers = {}, {}, {}
+    f._predictive = False
+    f._temp_history = {}
     f._targets = dict(targets or {})
     f._enabled = {z["id"]: True for z in zones}
     f._offset_values = {}
@@ -477,6 +481,67 @@ def test_event_routing_and_lock():
     check("two passes at once never overlap", active["max"] == 1, f"max={active['max']}")
 
 
+def history(*readings):
+    """Readings as (seconds ago, value), oldest first."""
+    now = time.monotonic()
+    return deque((now - ago, value) for ago, value in readings)
+
+
+FALLING = ((360, 22.6), (240, 22.4), (120, 22.2), (0, 22.0))  # -0.1°/min
+RISING = ((360, 21.4), (240, 21.6), (120, 21.8), (0, 22.0))   # +0.1°/min
+
+
+def test_predictive():
+    print("predictive control (experimental)")
+    m = manager({}, [ZONE])
+    m._temp_history["z1"] = history(*FALLING)
+    rate = m._temperature_rate("z1")
+    check("rate measured from recent readings (-6°/h)",
+          rate is not None and abs(rate + 0.1) < 1e-6, f"rate={rate}")
+    m._temp_history["z1"] = history((60, 22.0), (0, 21.9))
+    check("too little history -> no prediction", m._temperature_rate("z1") is None)
+    m._temp_history["z1"] = history((1800, 23.0), (1500, 22.0))
+    check("stale readings -> no prediction", m._temperature_rate("z1") is None)
+    m._temp_history["z1"] = history((300, 30.0), (200, 30.0), (0, 10.0))
+    check("implausible jump is capped",
+          m._temperature_rate("z1") == -C.PREDICT_MAX_RATE)
+
+    def decide(mode, readings, damper="on", predictive=True, room="22.0"):
+        m = manager({"climate.ac": climate(mode, 24.0, 24.0),
+                     "switch.z1": State(damper), "sensor.z1": State(room)},
+                    [ZONE], {"z1": 22.0})
+        m._predictive = predictive
+        m._temp_history["z1"] = history(*readings)
+        return m._decide_zone(ZONE)
+
+    got = decide("cool", FALLING)
+    check("cooling fast towards the edge -> closes early",
+          got is not None and got[0] is False and "overshoot" in got[1], f"got {got}")
+    check("switch off -> normal rules (hold)", decide("cool", FALLING, predictive=False) is None)
+    check("damper already closed -> nothing to do", decide("cool", FALLING, damper="off") is None)
+    check("room warming while cooling -> hold", decide("cool", RISING) is None)
+    check("cooling slowly -> hold",
+          decide("cool", ((360, 22.1), (0, 22.0))) is None)
+    got = decide("heat", RISING)
+    check("heating fast towards the edge -> closes early",
+          got is not None and got[0] is False, f"got {got}")
+    check("normal edges still win (too warm while cooling -> open)",
+          decide("cool", FALLING, room="22.5")[0] is True)
+
+    m = manager({"sensor.z1": State("22.0")}, [ZONE])
+    m._temp_history["z1"] = history(*FALLING)
+    trend = m.zone_trend(ZONE)
+    check("trend shown on the zone",
+          trend.get("trend_per_hour") == -6.0 and trend.get("predicted_temperature") == 21.5,
+          f"trend={trend}")
+
+    m = manager({"climate.ac": climate("cool", 24.0, 24.0), "switch.z1": State("on"),
+                 "sensor.z1": State("22.0")}, [ZONE], {"z1": 22.0})
+    run(m._handle_zone_entity_change(types.SimpleNamespace(
+        data={"entity_id": "sensor.z1", "new_state": State("22.0")})))
+    check("room readings are recorded as they arrive", len(m._temp_history.get("z1", [])) == 1)
+
+
 def test_config_flow():
     print("config flow")
     zones = [{"id": "a", "zone_switch": "switch.x"}, {"id": "b", "zone_switch": "switch.y"}]
@@ -502,7 +567,7 @@ def test_config_flow():
 for test in [test_numbers, test_setpoint_bound, test_base_memory, test_stop_switches,
              test_restore_check, test_retries, test_zone_decisions,
              test_offsets_and_targets, test_condition_debounce, test_trigger,
-             test_event_routing_and_lock, test_config_flow]:
+             test_event_routing_and_lock, test_predictive, test_config_flow]:
     test()
 
 print(f"\n{failures} FAILURE(S)" if failures else "\nall tests passed")

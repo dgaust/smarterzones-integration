@@ -115,6 +115,16 @@ SWITCH_RETRY_DELAY = 0.4  # seconds between attempts
 # rapidly cycle the damper. Displays still show the raw state immediately.
 CONDITION_DEBOUNCE_SECONDS = 30.0
 
+# Predictive control (experimental, off by default). Each room's recent rate
+# of change is used to close its damper early when it would otherwise
+# overshoot: a room keeps cooling (or warming) for a while after its damper
+# shuts, so we look that far ahead.
+PREDICT_WINDOW_SECONDS = 600    # readings used to measure the rate (10 min)
+PREDICT_MIN_SPAN_SECONDS = 180  # need at least this much history (3 min)
+PREDICT_LEAD_SECONDS = 300      # how far ahead to look (5 min)
+PREDICT_MAX_RATE = 0.2          # °/min; faster than this is treated as a glitch
+PREDICT_HISTORY = 120           # max readings kept per room
+
 # Bounds for the per-zone target-temperature number entity.
 TARGET_TEMP_MIN = 16.0
 TARGET_TEMP_MAX = 32.0

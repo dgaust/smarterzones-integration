@@ -24,6 +24,8 @@ from a dashboard.
   conditioning until the rooms are actually satisfied, not just the return-air
   sensor. The setpoint chosen on the unit is treated as a hard limit and is
   restored when the unit turns off.
+- **Predictive control (experimental)** — watches how fast each room is
+  changing and closes its damper early to avoid overshooting the target.
 - **Common zone support** — optionally keeps a nominated zone open whenever
   nothing else is, for units that need a minimum airflow path.
 - **Auto power-on** — optionally turns the unit on to heat or cool when a
@@ -90,6 +92,8 @@ Setup creates one **controller device** with a **sub-device per zone**.
   be pushed past the unit's own reading at full demand (default 2).
 - **Setpoint decision** (`sensor`) — the setpoint the automation has requested,
   with attributes explaining why.
+- **Predictive control (experimental)** (`switch`) — off by default. See
+  [Predictive control](#predictive-control-experimental).
 - **Air conditioner** (`climate`, optional) — a mirror of the underlying
   climate entity so the unit can be operated from the controller device.
   Enabled with "Show air conditioner controls on the device".
@@ -110,7 +114,8 @@ Setup creates one **controller device** with a **sub-device per zone**.
   are satisfied; lists each condition's required and current state as an
   attribute.
 - **Projected status** (`sensor`) — whether the zone would be open if the unit
-  were running.
+  were running. Its attributes also show the room's temperature trend and where
+  it's heading (see Predictive control).
 - **Cooling comfort range** / **Heating comfort range** (`sensor`) — the band
   the room is kept within for each mode, with `low`/`high`/`target` attributes
   for use in templates.
@@ -153,6 +158,26 @@ The **Setpoint bias** number tunes how aggressively the setpoint is pushed, and
 the **Setpoint decision** sensor explains every decision. The feature only acts
 in single-setpoint heat or cool modes; heat/cool, fan-only, and dry modes are
 left alone.
+
+## Predictive control (experimental)
+
+A room keeps cooling (or warming) for a few minutes after its damper closes, so
+it can overshoot its comfort band. With the **Predictive control
+(experimental)** switch turned on, SmarterZones watches how fast each room is
+changing and closes a damper early when the room is on course to pass the
+close point within the next 5 minutes. The room then coasts to the edge of its
+band instead of past it.
+
+- It only ever closes dampers early; it never opens them early.
+- It acts in cooling and heating modes, not heat/cool.
+- It needs a few minutes of readings from a room before it acts, and ignores
+  implausibly fast jumps in a reading.
+- Each zone's **Projected status** sensor shows what it sees:
+  `trend_per_hour` (how fast the room is changing) and `predicted_temperature`
+  (where it will be in `look_ahead_minutes`).
+
+It's off by default. If rooms finish short of their target, turn it off — the
+normal temperature rules carry on unchanged.
 
 ## How zones are decided
 
@@ -212,8 +237,8 @@ show_deviation: true
 icon_labels: false
 ```
 
-The integration registers the card as a dashboard resource for you (and keeps
-it pointed at the current version), so there is nothing to add by hand. If your
+The integration registers the card as a dashboard resource automatically (and
+keeps it pointed at the current version), so there is nothing to add by hand. If
 dashboard resources are managed in YAML it can't, and the log says exactly which
 resource to add: `/smarterzones/smarterzones-zone-card.js?v=<version>` as a
 **JavaScript module**. Refresh the browser after an update.
